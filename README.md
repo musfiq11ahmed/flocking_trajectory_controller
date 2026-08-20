@@ -2,6 +2,9 @@
 
 This hardware-in-the-loop (HIL) tracking architecture is designed for differential-drive swarm robots. By bridging a Python and OpenCV vision pipeline with a dual-core ESP32 hardware node via UDP, the system executes precise parametric trajectories and corrects spatial errors in real-time.
 
+## Project Status
+**Active / Work in Progress.** We are currently validating the baseline differential-drive kinematics on a single agent. Future updates will scale this architecture to support multi-robot flocking and complex lattice formations.
+
 ## Repository Structure
 
 *   **Trajectory Generation (`dummy_trajectory/`)**: Mathematical trajectory scripts tailored to physical arena bounds, outputting hardware-ready CSV files.
