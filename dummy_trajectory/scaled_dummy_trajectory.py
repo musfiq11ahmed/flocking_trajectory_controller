@@ -35,7 +35,7 @@ hardware_df = pd.DataFrame({
     'theta': df['theta']
 })
 
-# 8. Save the hardware-ready data
+# 8. Save the scaled data
 output_file = "scaled_dummy_trajectory.csv"
 hardware_df.to_csv(output_file, index=False)
 

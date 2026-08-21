@@ -2,9 +2,9 @@
 #include <WiFiMulti.h>
 #include <WiFiUdp.h>
 
-// ==========================================
+
 // 1. GLOBAL PINS & HARDWARE CONSTANTS
-// ==========================================
+
 const int leftForward = 4, leftReverse = 5;
 const int rightForward = 6, rightReverse = 7;
 const int leftEncoderA = 1, leftEncoderB = 2;
@@ -13,9 +13,9 @@ const int rightEncoderA = 9, rightEncoderB = 10;
 const float wheelCircumference = PI * 0.044; // 44mm wheels
 const float distancePerTick = wheelCircumference / 420.0; // 420 PPR
 
-// ==========================================
+
 // 2. VOLATILE ENCODER COUNTERS & ISRs
-// ==========================================
+
 volatile long leftTicks = 0;
 volatile long rightTicks = 0;
 
@@ -42,9 +42,9 @@ void IRAM_ATTR rightEncoderISR() {
   }
 }
 
-// ==========================================
+
 // 3. SHARED MEMORY & FREERTOS HANDLES
-// ==========================================
+
 SemaphoreHandle_t targetMutex; 
 float sharedTargetLeftMPS = 0.0;
 float sharedTargetRightMPS = 0.0;
@@ -57,9 +57,9 @@ float sharedKd = 0.0;
 TaskHandle_t NetworkTaskHandle;
 TaskHandle_t MotorTaskHandle;
 
-// ==========================================
+
 // 4. TASK 1: THE NETWORK NODE (CORE 0)
-// ==========================================
+
 void NetworkTask(void *pvParameters) {
   WiFiMulti wifiMulti;
   WiFiUDP udp;
@@ -111,9 +111,9 @@ void NetworkTask(void *pvParameters) {
   }
 }
 
-// ==========================================
+
 // 5. TASK 2: THE MOTOR CONTROLLER (CORE 1)
-// ==========================================
+
 void MotorTask(void *pvParameters) {
   long prevLeftTicks = 0, prevRightTicks = 0;
   float leftIntegral = 0, rightIntegral = 0;
@@ -183,9 +183,9 @@ void MotorTask(void *pvParameters) {
     leftPWM = leftFF + (localKp * leftError) + (localKi * leftIntegral) + (localKd * leftDerivative);
     rightPWM = rightFF + (localKp * rightError) + (localKi * rightIntegral) + (localKd * rightDerivative);
 
-    // ==========================================
-    // 5 & 6. BIDIRECTIONAL MOTOR CONSTRAINTS
-    // ==========================================
+    
+    // 5. BIDIRECTIONAL MOTOR CONSTRAINTS
+    
     int l_pwm_out = 0;
     int r_pwm_out = 0;
 
@@ -221,13 +221,13 @@ void MotorTask(void *pvParameters) {
       }
     }
 
-    // 7. Save states
+    // 6. Save states
     prevLeftTicks = currentLeftTicks;
     prevRightTicks = currentRightTicks;
     prevLeftError = leftError;
     prevRightError = rightError;
 
-    // --------------------------------------------------
+    
     // DEBUG HEARTBEAT: Exposing the internal speedometer
     static int heartbeat = 0;
     heartbeat++;
@@ -236,15 +236,15 @@ void MotorTask(void *pvParameters) {
                     localTargetLeft, currentLeftMPS, currentRightMPS, leftPWM, rightPWM);
       heartbeat = 0;
     }
-    // --------------------------------------------------
+    
 
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
   }
 }
 
-// ==========================================
+
 // 6. MAIN SETUP (THE DISPATCHER)
-// ==========================================
+
 void setup() {
   Serial.begin(115200);
 

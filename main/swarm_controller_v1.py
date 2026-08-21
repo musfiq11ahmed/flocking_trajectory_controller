@@ -4,9 +4,9 @@ import socket
 from kinematic_controller.unicycle_model_v1 import calculate_wheel_velocities
 from vision_pipeline.calibrate_and_track_v3 import SwarmVision
 
-# ==========================================
+
 # 1. SWARM CONFIGURATION
-# ==========================================
+
 UDP_IP = "192.168.50.105"
 UDP_PORT = 4210
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -24,7 +24,7 @@ def load_trajectory(filepath):
     return trajectory
 
 def main():
-    # Load the CSV you generated
+    # Load the CSV
     trajectory = load_trajectory("dummy_trajectory/scaled_s_trajectory.csv")
     current_waypoint_idx = 0
     

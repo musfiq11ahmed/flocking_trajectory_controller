@@ -32,18 +32,18 @@ def calculate_wheel_velocities(curr_x, curr_y, curr_theta, targ_x, targ_y):
     v_left = v - (w * TRACK_WIDTH / 2.0)
     v_right = v + (w * TRACK_WIDTH / 2.0)
     
-    # ==========================================
+    
     # 7. PROPORTIONAL DEADBAND SCALING
-    # ==========================================
+    
     # Find which wheel is being commanded to spin the fastest
     max_wheel_speed = max(abs(v_left), abs(v_right))
     
-    # If the robot is trying to move, but the fastest wheel is too weak to break friction...
+    # If the robot is trying to move, but the fastest wheel is too weak to break friction
     if 0.01 < max_wheel_speed < MIN_SPEED:
         # Calculate the exact multiplier needed to boost the fastest wheel to MIN_SPEED
         boost_factor = MIN_SPEED / max_wheel_speed
         
-        # Apply that exact same multiplier to BOTH wheels to preserve the turn radius!
+        # Apply that exact same multiplier to both wheels to preserve the turn radius
         v_left *= boost_factor
         v_right *= boost_factor
         

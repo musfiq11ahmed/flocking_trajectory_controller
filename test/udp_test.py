@@ -1,8 +1,8 @@
 import socket
 import time
 
-# --- NETWORK SETUP ---
-# The exact IP address assigned by your home router
+# NETWORK SETUP
+# The IP address assigned by router
 UDP_IP = "192.168.0.101" 
 UDP_PORT = 4210
 
@@ -10,7 +10,7 @@ UDP_PORT = 4210
 print(f"Opening UDP socket to target IP: {UDP_IP}:{UDP_PORT}")
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-# --- THE MESSAGE ---
+# THE MESSAGE
 # Formatted as: "TARGET, Left_m/s, Right_m/s"
 message = "TARGET,0.33,0.33"
 

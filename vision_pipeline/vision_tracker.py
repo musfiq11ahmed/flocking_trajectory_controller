@@ -4,36 +4,30 @@ import math
 import numpy as np
 from pupil_apriltags import Detector
 
-# ==========================================
+
 # 1. CAMERA INITIALIZATION
-# ==========================================
-# 0 is usually the default built-in webcam. Change to 1 or 2 if the Rapoo C280 is an external USB camera.
+
 cap = cv2.VideoCapture(1) 
 
 # Set resolution (We will use 1080p to maintain a high framerate on the Rapoo)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
-# LOCK AUTO-FOCUS AND AUTO-EXPOSURE (CRITICAL FOR ROBOTICS)
+# LOCK AUTO-FOCUS AND AUTO-EXPOSURE 
 cap.set(cv2.CAP_PROP_AUTOFOCUS, 0) 
 
-# Note: OpenCV exposure flags vary by Operating System.
-# Windows (DirectShow): 0.25 is manual, 0.75 is auto.
-# Linux (V4L2): 1 is manual, 3 is auto.
 cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25) 
-# cap.set(cv2.CAP_PROP_EXPOSURE, -5) # Uncomment and tweak this to darken the room and kill glare
 
-# ==========================================
+
 # 2. APRILTAG DETECTOR & STATE VARIABLES
-# ==========================================
-# We use tag36h11 as it is the industry standard for robotics
+
 detector = Detector(families='tag36h11', nthreads=1)
 
 # Dead Reckoning State Memory
 last_pose = None  # (x, y, theta)
 last_time = time.time()
 vx, vy = 0.0, 0.0  # Velocity in pixels per second
-alpha = 0.5  # Smoothing factor for our vision-only velocity filter
+alpha = 0.5  # Smoothing factor for vision-only velocity filter
 
 print("[INFO] Vision Pipeline Initialized. Press 'q' to quit.")
 
@@ -51,9 +45,9 @@ while True:
     results = detector.detect(gray)
     
     if len(results) > 0:
-        # ==========================================
+        
         # 3. TAG DETECTED (TRUE TRACKING)
-        # ==========================================
+        
         tag = results[0] 
         
         # Extract 2D Center Position
@@ -89,9 +83,9 @@ while True:
         color = (0, 255, 0) # Green
         
     else:
-        # ==========================================
+        
         # 4. TAG LOST (DEAD RECKONING FAILSAFE)
-        # ==========================================
+        
         if last_pose is not None and dt > 0:
             # Predict new position using last known smoothed velocity
             x = last_pose[0] + (vx * dt)
@@ -109,9 +103,9 @@ while True:
             status = "SEARCHING..."
             color = (0, 0, 255) # Red
 
-    # ==========================================
+    
     # 5. VISUALIZATION
-    # ==========================================
+    
     if status != "SEARCHING...":
         # Draw Robot Center
         cv2.circle(frame, (int(x), int(y)), 8, color, -1)

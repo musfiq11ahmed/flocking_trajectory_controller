@@ -3,9 +3,9 @@ import numpy as np
 
 class SwarmVision:
     def __init__(self):
-        # ==========================================
+        
         # SETUP ARUCO DETECTOR
-        # ==========================================
+        
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
         self.parameters = cv2.aruco.DetectorParameters()
         
@@ -88,10 +88,10 @@ class SwarmVision:
         if not success:
             return {}, False, False
 
-        # ADD THIS: Convert the frame to pure grayscale to kill color noise
+        # Convert the frame to pure grayscale to kill color noise
         gray_frame = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-        # CHANGE THIS: Pass the 'gray_frame' to the detector instead of 'img'
+        # Pass the 'gray_frame' to the detector instead of 'img'
         corners, ids, rejectedImgPoints = self.detector.detectMarkers(gray_frame)
 
         
@@ -120,7 +120,7 @@ class SwarmVision:
                     if marker_id not in self.bot_states:
                         self.bot_states[marker_id] = {'x': raw_x, 'y': raw_y, 'theta': raw_theta}
                     else:
-                        # THE MISSING LINE: Grab the previous state first!
+                        # Grab the previous state first
                         prev = self.bot_states[marker_id]
                         
                         smooth_x = self.ALPHA_POS * raw_x + (1 - self.ALPHA_POS) * prev['x']

@@ -3,13 +3,13 @@ import numpy as np
 
 class SwarmVision:
     def __init__(self):
-        # ==========================================
+        
         # SETUP ARUCO DETECTOR
-        # ==========================================
+        
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
         self.parameters = cv2.aruco.DetectorParameters()
         
-        # 1. Make the shape approximation more forgiving (Helps fight motion blur smearing)
+        # Make the shape approximation more forgiving (Helps fight motion blur smearing)
         self.parameters.polygonalApproxAccuracyRate = 0.05
         self.parameters.minMarkerPerimeterRate = 0.015
         self.parameters.adaptiveThreshConstant = 7
@@ -120,7 +120,7 @@ class SwarmVision:
                     if marker_id not in self.bot_states:
                         self.bot_states[marker_id] = {'x': raw_x, 'y': raw_y, 'theta': raw_theta}
                     else:
-                        # THE MISSING LINE: Grab the previous state first!
+                        # Grab the previous state first!
                         prev = self.bot_states[marker_id]
                         
                         smooth_x = self.ALPHA_POS * raw_x + (1 - self.ALPHA_POS) * prev['x']

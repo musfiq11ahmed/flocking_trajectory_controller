@@ -1,24 +1,24 @@
 import cv2
 import numpy as np
 
-# ==========================================
+
 # 1. SETUP ARUCO DETECTOR
-# ==========================================
+
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
 parameters = cv2.aruco.DetectorParameters()
 
-# ADD THIS LINE: Force fractional pixel accuracy for the corners
+# Force fractional pixel accuracy for the corners
 parameters.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
 
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-# 1. Add 'cv2.CAP_DSHOW' to bypass Windows restrictions and unlock the full sensor
+# Add 'cv2.CAP_DSHOW' to bypass Windows restrictions and unlock the full sensor
 cam = cv2.VideoCapture(1, cv2.CAP_DSHOW) 
 
-# 2. Force MJPG compression to bypass USB bandwidth limits
+# Force MJPG compression to bypass USB bandwidth limits
 cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 
-# 3. Request the full 2K widescreen resolution
+# Request the full 2K widescreen resolution
 cam.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)
 cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)
 self.cam.set(cv2.CAP_PROP_AUTOFOCUS, 0) # Turn off Auto-Focus
@@ -27,12 +27,12 @@ self.cam.set(cv2.CAP_PROP_FOCUS, 0)     # Lock focus to infinity/floor
 if not cam.isOpened():
     raise RuntimeError("Could not open Rapoo camera.")
 
-# 4. Print the actual resolution to prove it worked
+# Print the actual resolution to prove it worked
 actual_w = cam.get(cv2.CAP_PROP_FRAME_WIDTH)
 actual_h = cam.get(cv2.CAP_PROP_FRAME_HEIGHT)
 print(f"[INFO] Camera started at resolution: {actual_w} x {actual_h}")
 
-# Real-world coordinates (update these with your actual tape measure values!)
+# Real-world coordinates 
 # Origin (0,0) is the exact physical center of the 2.7m x 1.67m arena
 WORLD_ANCHORS = np.array([
     [-1.35, -0.835],  # ID 100: Bottom-Left
@@ -99,9 +99,8 @@ print("[INFO] Press 'c' to lock calibration matrix, or 'q' to quit.")
 homography_matrix = None
 is_calibrated = False
 
-# ==========================================
 # EMA FILTER SETUP
-# ==========================================
+
 # Dictionary to store the smoothed states of each robot
 bot_states = {}
 
@@ -110,9 +109,9 @@ bot_states = {}
 ALPHA_POS = 0.4   # For X, Y
 ALPHA_THETA = 0.1 # Heading usually needs heavier smoothing
 
-# ==========================================
+
 # 2. MAIN VISION PIPELINE
-# ==========================================
+
 while True:
     success, img = cam.read()
     if not success:
@@ -129,16 +128,16 @@ while True:
         cv2.aruco.drawDetectedMarkers(img, corners)
 
         for i in range(len(ids)):
-            # 1. Extract the ID and corner data for the current tag
+            # Extract the ID and corner data for the current tag
             marker_id = int(ids[i])
             marker_corners = corners[i][0]
             pixel_center = marker_corners.mean(axis=0)
 
-            # 2. If it's an anchor tag, store its pixel location
+            # If it's an anchor tag, store its pixel location
             if marker_id in [100, 101, 102, 103]:
                 detected_anchors[marker_id] = pixel_center
 
-            # 3. If it is ANY other tag (0, 1, 2, etc.), treat it as a robot!
+            # If it is ANY other tag (0, 1, 2, etc.), treat it as a robot!
             elif is_calibrated:
                 pt = np.array([[[pixel_center[0], pixel_center[1]]]], dtype=np.float32)
                 transformed_pt = cv2.perspectiveTransform(pt, homography_matrix)[0][0]
@@ -146,7 +145,7 @@ while True:
                 raw_x, raw_y = transformed_pt[0], transformed_pt[1]
                 raw_theta = calculate_angle_radians(marker_corners)
 
-                # --- APPLY EXPONENTIAL MOVING AVERAGE (EMA) ---
+                # APPLY EXPONENTIAL MOVING AVERAGE (EMA)
                 if marker_id not in bot_states:
                     # First time seeing this bot, initialize with raw values
                     bot_states[marker_id] = {'x': raw_x, 'y': raw_y, 'theta': raw_theta}
@@ -190,13 +189,13 @@ while True:
                 
                 print(f"[TRACKING] Bot {marker_id} -> X: {bot_x:.3f}m, Y: {bot_y:.3f}m, Theta: {bot_theta:.3f} rad")
 
-    # ==========================================
-    # 3. KEYBOARD CONTROLS (Properly Scoped)
-    # ==========================================
+    
+    # 3. KEYBOARD CONTROLS 
+    
     key = cv2.waitKey(1) & 0xFF
     
     if key == ord('c'):
-        # Ensure all 4 anchors are currently detected before doing the math
+        # Ensure all 4 anchors are currently detected
         if all(k in detected_anchors for k in [100, 101, 102, 103]):
             pixel_anchors = np.array([
                 detected_anchors[100],
@@ -215,9 +214,9 @@ while True:
     elif key == ord('q'):
         break
 
-    # ==========================================
+    
     # 4. STATUS OVERLAY & VIRTUAL GRID
-    # ==========================================
+    
     # Draw the AR grid if calibration is locked
     if is_calibrated:
         img = draw_virtual_grid(img, homography_matrix, arena_width=2.7, arena_height=1.67, grid_step=0.5)
@@ -226,9 +225,8 @@ while True:
     color = (0, 255, 0) if is_calibrated else (0, 0, 255)
     cv2.putText(img, status_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-    # --- THE DISPLAY FIX ---
-    # Shrink the image down to 720p purely so it fits on your monitor.
-    # This does NOT affect the high-res math and homography running above it!
+    # THE DISPLAY FIX
+    
     display_img = cv2.resize(img, (1280, 720))
     
     cv2.imshow("Arena Calibration & Vision Pipeline", display_img)

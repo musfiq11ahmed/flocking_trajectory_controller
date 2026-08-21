@@ -3,9 +3,9 @@ import random
 import math
 import os
 
-# ==========================================
+
 # 1. SIMULATION PARAMETERS
-# ==========================================
+
 dt = 0.02          # 50Hz timestep
 duration = 10.0    # 10 seconds of simulated flight time
 steps = int(duration / dt)
@@ -25,14 +25,14 @@ with open(filepath, mode='w', newline='') as file:
     writer.writerow(['x', 'y', 'theta'])
     
     for _ in range(steps):
-        # 1. Record the current state
+        # 1. Recording the current state
         writer.writerow([round(x, 4), round(y, 4), round(theta, 4)])
         
         # 2. Randomly adjust the steering (omega) a tiny bit
         # This acts like a driver smoothly wiggling the steering wheel
         omega += random.uniform(-0.1, 0.1)
         
-        # Clamp omega so the robot doesn't spin out of control
+        # Clamping omega so the robot doesn't spin out of control
         omega = max(-1.0, min(1.0, omega)) 
         
         # 3. Calculate where the robot will be next frame (Dead Reckoning math)

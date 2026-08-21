@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
 
-# ==========================================
+
 # 1. SETUP ARUCO DETECTOR
-# ==========================================
+
 aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
 parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
@@ -26,7 +26,7 @@ actual_w = cam.get(cv2.CAP_PROP_FRAME_WIDTH)
 actual_h = cam.get(cv2.CAP_PROP_FRAME_HEIGHT)
 print(f"[INFO] Camera started at resolution: {actual_w} x {actual_h}")
 
-# Real-world coordinates (update these with your actual tape measure values!)
+# Real-world coordinates
 # Origin (0,0) is the exact physical center of the 2.7m x 1.67m arena
 WORLD_ANCHORS = np.array([
     [-1.35, -0.835],  # ID 100: Bottom-Left
@@ -48,9 +48,9 @@ print("[INFO] Press 'c' to lock calibration matrix, or 'q' to quit.")
 homography_matrix = None
 is_calibrated = False
 
-# ==========================================
+
 # 2. MAIN VISION PIPELINE
-# ==========================================
+
 while True:
     success, img = cam.read()
     if not success:
@@ -94,13 +94,13 @@ while True:
                 
                 print(f"[TRACKING] Bot {marker_id} -> X: {bot_x:.3f}m, Y: {bot_y:.3f}m, Theta: {bot_theta:.2f} rad")
 
-    # ==========================================
+    
     # 3. KEYBOARD CONTROLS (Properly Scoped)
-    # ==========================================
+    
     key = cv2.waitKey(1) & 0xFF
     
     if key == ord('c'):
-        # Ensure all 4 anchors are currently detected before doing the math
+        # Ensure all 4 anchors are currently detected
         if all(k in detected_anchors for k in [100, 101, 102, 103]):
             pixel_anchors = np.array([
                 detected_anchors[100],
@@ -119,16 +119,15 @@ while True:
     elif key == ord('q'):
         break
 
-# ==========================================
+
     # 4. STATUS OVERLAY
-    # ==========================================
+    
     status_text = "Calibrated" if is_calibrated else "Uncalibrated - Press 'c' to Lock"
     color = (0, 255, 0) if is_calibrated else (0, 0, 255)
     cv2.putText(img, status_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
 
-    # --- THE DISPLAY FIX ---
-    # Shrink the image down to 720p purely so it fits on your monitor.
-    # This does NOT affect the high-res math and homography running above it!
+    # THE DISPLAY FIX
+    
     display_img = cv2.resize(img, (1280, 720))
     
     cv2.imshow("Arena Calibration & Vision Pipeline", display_img)

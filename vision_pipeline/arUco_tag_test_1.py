@@ -5,7 +5,7 @@ aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250)
 parameters = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-cam = cv2.VideoCapture(1)  # try 0 first; change if wrong camera opens
+cam = cv2.VideoCapture(1)  
 cam.set(3, 700)
 cam.set(4, 505)
 
