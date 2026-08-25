@@ -1,14 +1,13 @@
 import csv
 import math
 import socket
-from kinematic_controller.unicycle_model_v3 import calculate_wheel_velocities
-from vision_pipeline.calibrate_and_track_v4 import SwarmVision
+from archive.unicycle_model_v3 import calculate_wheel_velocities
+from vision_pipeline.calibrate_and_track import SwarmVision
 
 
 # 1. SWARM CONFIGURATION
 
-UDP_IP = "192.168.50.105"
-UDP_PORT = 4210
+from config import UDP_IP, UDP_PORT
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 TARGET_BOT_ID = 2  # The ArUco marker ID attached to Test Bot 1
 

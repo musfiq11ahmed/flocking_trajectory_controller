@@ -2,8 +2,7 @@ import socket
 
 # --- NETWORK SETUP ---
 # UDP_IP = "192.168.0.105"  # Home IP
-UDP_IP = "192.168.50.105" # Lab IP
-UDP_PORT = 4210
+from config import UDP_IP, UDP_PORT
 
 print(f"Opening UDP socket to target IP: {UDP_IP}:{UDP_PORT}")
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

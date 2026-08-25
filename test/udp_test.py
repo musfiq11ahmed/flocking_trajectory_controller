@@ -3,8 +3,7 @@ import time
 
 # NETWORK SETUP
 # The IP address assigned by router
-UDP_IP = "192.168.0.101" 
-UDP_PORT = 4210
+from config import UDP_IP, UDP_PORT
 
 # Create a UDP socket
 print(f"Opening UDP socket to target IP: {UDP_IP}:{UDP_PORT}")
