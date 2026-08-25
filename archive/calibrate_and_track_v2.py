@@ -21,8 +21,8 @@ cam.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
 # Request the full 2K widescreen resolution
 cam.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)
 cam.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)
-self.cam.set(cv2.CAP_PROP_AUTOFOCUS, 0) # Turn off Auto-Focus
-self.cam.set(cv2.CAP_PROP_FOCUS, 0)     # Lock focus to infinity/floor
+cam.set(cv2.CAP_PROP_AUTOFOCUS, 0) # Turn off Auto-Focus
+cam.set(cv2.CAP_PROP_FOCUS, 0)     # Lock focus to infinity/floor
 
 if not cam.isOpened():
     raise RuntimeError("Could not open Rapoo camera.")

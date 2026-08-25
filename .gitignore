@@ -181,3 +181,7 @@ cython_debug/
 .cursorindexingignore
 
 project_context.md
+
+config.py
+
+esp32_firmware/secrets.h
