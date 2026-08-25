@@ -12,7 +12,7 @@ class SwarmVision:
         # Make the shape approximation more forgiving (Helps fight motion blur smearing)
         self.parameters.polygonalApproxAccuracyRate = 0.05
         self.parameters.minMarkerPerimeterRate = 0.015
-        self.parameters.adaptiveThreshConstant = 7
+        self.parameters.adaptiveThreshConstant = 10
         self.parameters.adaptiveThreshWinSizeMin = 3
         self.parameters.adaptiveThreshWinSizeMax = 23
         self.parameters.adaptiveThreshWinSizeStep = 10
@@ -44,6 +44,10 @@ class SwarmVision:
 
         self.homography_matrix = None
         self.is_calibrated = False
+
+        self.ANCHOR_IDS = [100, 101, 102, 103]
+        self.BOT_IDS = [2]
+        self.VALID_IDS = self.ANCHOR_IDS + self.BOT_IDS
         
         # EMA Filter Setup
         self.bot_states = {}
@@ -104,6 +108,8 @@ class SwarmVision:
 
             for i in range(len(ids)):
                 marker_id = int(ids[i])
+                if marker_id not in self.VALID_IDS:
+                    continue
                 marker_corners = corners[i][0]
                 pixel_center = marker_corners.mean(axis=0)
 
@@ -119,6 +125,7 @@ class SwarmVision:
                     # EMA Filter Application
                     if marker_id not in self.bot_states:
                         self.bot_states[marker_id] = {'x': raw_x, 'y': raw_y, 'theta': raw_theta}
+                        print(f"[INIT] Bot {marker_id} first seen: theta={raw_theta:.3f} rad")
                     else:
                         # Grab the previous state first!
                         prev = self.bot_states[marker_id]

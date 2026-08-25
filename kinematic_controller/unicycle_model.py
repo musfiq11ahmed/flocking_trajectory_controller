@@ -23,9 +23,16 @@ def calculate_wheel_velocities(curr_x, curr_y, curr_theta, targ_x, targ_y):
     target_angle = math.atan2(targ_y - curr_y, targ_x - curr_x)
     heading_error = target_angle - curr_theta
     heading_error = math.atan2(math.sin(heading_error), math.cos(heading_error))
+
+    if abs(heading_error) > math.pi / 2:
+        forward_scale = 0.2  # Mostly turn, little forward
+    else:
+        forward_scale = max(0.2, math.cos(heading_error))
+
+    v = K_v * dist_error * forward_scale
     
     # 5. Unicycle Control Law
-    v = K_v * dist_error * max(0, math.cos(heading_error)) 
+    v = K_v * dist_error * max(0.2, math.cos(heading_error)) 
     w = K_w * heading_error
     
     # 6. Differential Drive Matrix

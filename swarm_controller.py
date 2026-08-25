@@ -1,14 +1,13 @@
 import csv
 import math
 import socket
-from kinematic_controller.unicycle_model_v3 import calculate_wheel_velocities
-from vision_pipeline.calibrate_and_track_v4 import SwarmVision
+from kinematic_controller.unicycle_model import calculate_wheel_velocities
+from vision_pipeline.calibrate_and_track import SwarmVision
 
 
 # 1. SWARM CONFIGURATION
 
-UDP_IP = "192.168.50.105"
-UDP_PORT = 4210
+from config import UDP_IP, UDP_PORT
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 TARGET_BOT_ID = 2  # The ArUco marker ID attached to Test Bot 1
 
@@ -95,7 +94,7 @@ def main():
                 last_pose = current_pose
                 lost_frames = 0
                 robot_x, robot_y, robot_theta = last_pose
-                # print(f"Bot theta: {robot_theta:.3f} rad")
+                print(f"Bot theta: {robot_theta:.3f} rad")
            
             # HOMING PHASE: Go to trajectory start first
             
