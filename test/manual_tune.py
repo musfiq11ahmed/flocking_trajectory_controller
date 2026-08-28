@@ -1,7 +1,7 @@
 import socket
 
 # --- NETWORK SETUP ---
-# UDP_IP = "192.168.0.105"  # Home IP
+
 from config import UDP_IP, UDP_PORT
 
 print(f"Opening UDP socket to target IP: {UDP_IP}:{UDP_PORT}")

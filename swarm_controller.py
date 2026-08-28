@@ -98,7 +98,8 @@ def main():
            
             # HOMING PHASE: Go to trajectory start first
             
-            HOME_TOLERANCE = 0.15  # 15cm — generous, just needs to be close
+            HOME_TOLERANCE = 0.20  # 15cm — generous, just needs to be close
+            homing_done_once = False
             homing_complete = False
 
             while not homing_complete:
@@ -124,17 +125,21 @@ def main():
                 
                 dist_to_home = math.sqrt((home_x - robot_x)**2 + (home_y - robot_y)**2)
                 
-                if dist_to_home < HOME_TOLERANCE:
+                if dist_to_home < HOME_TOLERANCE and not homing_done_once:
+                    homing_done_once = True
                     homing_complete = True
                     sock.sendto(b"TARGET,0.0,0.0", (UDP_IP, UDP_PORT))
-                    print("[INFO] Homing complete. Starting trajectory.")
+                    print("[INFO] Homing complete. Waiting to settle...")
                     import time
-                    time.sleep(1.0)  # Brief pause before trajectory starts
+                    time.sleep(2.0)
+                    print("[INFO] Starting trajectory.")
                 else:
                     left_mps, right_mps, arrived = calculate_wheel_velocities(
                         robot_x, robot_y, robot_theta, home_x, home_y
                     )
+                    print(f"HOME | Bot: ({robot_x:.2f}, {robot_y:.2f}, {robot_theta:.2f}) | Target: ({home_x:.2f}, {home_y:.2f}) | L: {left_mps:.2f} R: {right_mps:.2f}")
                     msg = f"TARGET,{left_mps:.2f},{right_mps:.2f}"
+                    print(f"SENDING: TARGET,{left_mps:.2f},{right_mps:.2f}")
                     sock.sendto(msg.encode(), (UDP_IP, UDP_PORT))
                    
 

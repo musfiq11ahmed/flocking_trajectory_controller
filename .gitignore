@@ -185,3 +185,5 @@ project_context.md
 config.py
 
 esp32_firmware/secrets.h
+
+manual_tune.py

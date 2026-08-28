@@ -54,6 +54,8 @@ class SwarmVision:
         self.ALPHA_POS = 0.15
         self.ALPHA_THETA = 0.05
 
+    # Helper functions (Math and UI)
+
     def _calculate_angle_radians(self, corners):
         top_left, top_right, bottom_right, bottom_left = corners
         vector = top_right - top_left
@@ -88,6 +90,8 @@ class SwarmVision:
         cv2.polylines(frame, [arena_corners], isClosed=True, color=(0, 0, 255), thickness=3)
         return frame
 
+    # The main update loop
+
     def update(self):
         """Called once per frame by the master script. Returns a dict of bot poses and calibration status."""
         success, img = self.cam.read()
@@ -97,7 +101,7 @@ class SwarmVision:
         gray_frame = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray_frame = self.clahe.apply(gray_frame)  # Apply pre-created CLAHE
         corners, ids, rejectedImgPoints = self.detector.detectMarkers(gray_frame)
-        # print(f"Detected: {len(ids) if ids is not None else 0} markers | Rejected: {len(rejectedImgPoints)}")
+        print(f"Detected: {len(ids) if ids is not None else 0} markers | Rejected: {len(rejectedImgPoints)}")
         
         detected_anchors = {}
         current_poses = {}
@@ -137,12 +141,12 @@ class SwarmVision:
                         diff = (raw_theta - prev['theta'] + np.pi) % (2 * np.pi) - np.pi
                         
                         # The Impossible Physics Check
-                        if abs(diff) > 0.8: 
-                            smooth_theta = prev['theta']
-                        elif abs(diff) < 0.035:
-                            smooth_theta = prev['theta']
-                        else:
-                            smooth_theta = (prev['theta'] + self.ALPHA_THETA * diff + np.pi) % (2 * np.pi) - np.pi
+                        # if abs(diff) > 0.8: 
+                            # smooth_theta = prev['theta']
+                        # elif abs(diff) < 0.035:
+                            # smooth_theta = prev['theta']
+                        # else:
+                        smooth_theta = (prev['theta'] + self.ALPHA_THETA * diff + np.pi) % (2 * np.pi) - np.pi
 
                         self.bot_states[marker_id] = {'x': smooth_x, 'y': smooth_y, 'theta': smooth_theta}
 
