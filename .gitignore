@@ -187,3 +187,7 @@ config.py
 esp32_firmware/secrets.h
 
 manual_tune.py
+
+swarm_controller_test.py
+
+kinematic_controller/unicycle_model_turn_fixed.py
