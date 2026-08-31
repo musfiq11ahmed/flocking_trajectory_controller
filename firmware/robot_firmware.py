@@ -72,8 +72,8 @@ from machine import PWM, Pin
 # ============================ TUNABLES (edit me) ============================
 
 # --- WiFi credentials --------------------------------------------------------
-WIFI_SSID = "YOUR_WIFI_SSID"
-WIFI_PASSWORD = "YOUR_WIFI_PASSWORD"
+WIFI_SSID = "Niro2.4G"
+WIFI_PASSWORD = "niro@2026"
 WIFI_CONNECT_TIMEOUT_MS = 15000   # per-attempt timeout before printing a retry
 
 # --- UDP protocol ------------------------------------------------------------
@@ -199,9 +199,11 @@ class Encoder:
         self._phase_b = Pin(pin_b, Pin.IN)
         self._key = count_key
         phase_a = Pin(pin_a, Pin.IN)
+        # phase_a.irq(handler=self._on_a_rising,
+        #             trigger=Pin.IRQ_RISING,
+        #             hard=False)   # soft IRQ: VM callback (see header warning)
         phase_a.irq(handler=self._on_a_rising,
-                    trigger=Pin.IRQ_RISING,
-                    hard=False)   # soft IRQ: VM callback (see header warning)
+                            trigger=Pin.IRQ_RISING) 
 
     def _on_a_rising(self, pin):
         if self._phase_b.value():
