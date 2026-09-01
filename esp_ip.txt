@@ -32,3 +32,16 @@ You can reconnect with:
 and reset it with:
 
 >>mpremote connect COM13 reset
+
+
+To flash data/ To upload it to the ESP32 as main.py, run::
+>>mpremote connect PORT_NUMBER fs cp DIRECTORY\FILENAME.py :main.py
+
+Verify
+>>mpremote connect COM13 fs ls
+
+=== ESP32-S3 diff-drive bot firmware v2.3 (diagnostics build) ===
+[WiFi] connecting to "Niro2.4G" (attempt 1)
+[WiFi] connected, IP = 192.168.50.105
+[UDP ] listening on port 4210
+[NET ] listening on 0.0.0.0:4210 -- waiting for first command

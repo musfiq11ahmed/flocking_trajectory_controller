@@ -1,36 +1,38 @@
 """
 robot_firmware_v2.py -- MicroPython firmware for the ESP32-S3 differential-drive bot.
 ====================================================================================
-DIAGNOSTICS BUILD. The UDP wire protocol is BYTE-IDENTICAL to v1
+DIAGNOSTICS BUILD, v2.4. The UDP wire protocol is BYTE-IDENTICAL to v1
 (command '<ff' 8 bytes, telemetry '<ffiiff' 24 bytes), so pc/udp_protocol.py
-does not need any changes. Deploy as main.py exactly like v1.
+does not need any changes. Deploy as main.py.
 
-What v2 adds (debuggability only -- no behavior change):
-  1. [NET] prints: first-command announcement, rx_ok/rx_bad counters and current
-     targets/duties every 2 s. You can now SEE whether commands arrive.
-  2. [FAILSAFE] prints when the 500 ms command-loss coast engages/clears.
-  3. [NET FAULT] print if the network thread crashes (v1 died silently).
-  4. SO_REUSEADDR on the UDP socket (survives re-running main.py without reset).
-  5. recvfrom buffer raised 8 -> 64 bytes: an oversized/misformatted datagram is
-     now counted as rx_bad instead of being silently truncated into a
-     plausible-looking command.
-  6. NaN guard: a PC-side format bug (wrong endianness/width) can unpack as
-     NaN, which slips through _clamp and lands Motor.set() in its coast
-     branch FOREVER with a clean log. NaN packets now count as rx_bad.
-     (Denormal decodes remain visible via the raw-bytes print and the
-     full-precision tgt values in the [NET] report.)
-  7. Encoder keeps a reference to the Phase A Pin object (v1 left it as a local
-     in __init__; keeping the object alive is required for the IRQ to stay
-     registered).
+Changelog:
+  v2.0 Diagnostics: [NET] rx_ok/rx_bad counters + status print every 2 s,
+       first-command raw-bytes print, [FAILSAFE] engage/clear prints,
+       [NET FAULT] on network-thread crash, SO_REUSEADDR, recvfrom buffer
+       8 -> 64 bytes (oversized datagrams now count as rx_bad instead of
+       being truncated into false-valid commands), NaN guard (a PC-side
+       packing bug can decode as NaN, slip through _clamp, and coast the
+       motors forever), encoder keeps its Phase A Pin object alive.
+  v2.1 Control loop sleeps in <=1 ms slices. A single 49 ms sleep_us
+       busy-waits while holding the GIL, and so does the network thread's
+       blocking recvfrom -- the two threads serialized each other and
+       telemetry collapsed to ~10 Hz. Short slices hand the GIL over.
+  v2.2 WiFi watchdog: detect drop, reconnect automatically, print the new
+       IP (v1 had NO reconnect logic: one AP hiccup or motor-induced
+       brownout left the robot permanently deaf).
+  v2.3 Do NOT pass hard= to Pin.irq -- MicroPython v1.29.0 (ESP32-S3)
+       rejects it ("extra keyword arguments given"); soft is the default.
+  v2.4 Power-save fix, verified: a silently sleeping radio is ARP-deaf
+       (PC sees "Destination host unreachable" while the robot is online;
+       this unit read pm=1 = min-modem sleep). Disable pm AND read it back
+       at boot, plus a keep-alive beacon to the gateway every 2 s so the
+       radio always has reason to wake and the AP association stays warm.
 
 NOTE: even with SO_REUSEADDR, never re-run main.py on a live VM
 (exec/mpremote run without reset): the previous network thread stays alive
 and keeps writing to the OLD shared dict while the new control loop reads
 the NEW one -> commands received, motors dead. Always soft-reset first:
     mpremote connect COM13 reset
-
-Deploy: copy this file to the ESP32-S3 as ``main.py`` (mpremote or Thonny, see
-README.md). It runs automatically at boot. No ``boot.py`` is needed.
 
 Hardware:
   - MCU          : ESP32-S3
@@ -58,12 +60,12 @@ UDP protocol (little-endian, packed, MUST match pc/udp_protocol.py):
                                              float right_pwm_duty (-1..+1)
 
 Encoder decoding -- 1x (single channel, single edge):
-  Python IRQ handlers on ESP32 are SOFT-scheduled (hard=False): they run as
-  callbacks inside the VM, not as true hardware ISRs, so they can and WILL
-  miss edges at full 4x quadrature rates. Practical ceiling is on the order
-  of a few kHz of edges per second (worst-case drops under WiFi/GC load).
-  Therefore this firmware counts only the RISING edge of Phase A and samples
-  Phase B for direction (1x decoding). At ENCODER_TICKS_PER_REV = 1800 per
+  Python IRQ handlers on ESP32 are SOFT-scheduled: they run as callbacks
+  inside the VM, not as true hardware ISRs, so they can and WILL miss edges
+  at full 4x quadrature rates. Practical ceiling is on the order of a few
+  kHz of edges per second (worst-case drops under WiFi/GC load). Therefore
+  this firmware counts only the RISING edge of Phase A and samples Phase B
+  for direction (1x decoding). At ENCODER_TICKS_PER_REV = 1800 per
   output-shaft rev (12 CPR motor shaft x 150:1 gearbox, 1x), the edge rate is
     edges/s = (RPM / 60) * 12 * 150 = 30 * RPM
   i.e. ~3.6 kHz at the 120 RPM clamp -- already near the practical limit, so
@@ -99,7 +101,7 @@ from machine import PWM, Pin
 # ============================ TUNABLES (edit me) ============================
 
 # --- WiFi credentials --------------------------------------------------------
-WIFI_SSID = "ASUS_1E_NIRO_2.4G"
+WIFI_SSID = "Niro2.4G"
 WIFI_PASSWORD = "niro@2026"
 WIFI_CONNECT_TIMEOUT_MS = 15000   # per-attempt timeout before printing a retry
 
@@ -107,7 +109,7 @@ WIFI_CONNECT_TIMEOUT_MS = 15000   # per-attempt timeout before printing a retry
 UDP_PORT = 4210                   # command listener + telemetry source port
 TELEMETRY_PERIOD_MS = 50          # 20 Hz telemetry stream
 FAILSAFE_TIMEOUT_MS = 500         # command-loss timeout -> coast
-NET_REPORT_PERIOD_MS = 2000       # v2: [NET] diagnostics print cadence
+NET_REPORT_PERIOD_MS = 2000       # [NET] diagnostics print + beacon cadence
 
 # --- Encoders ----------------------------------------------------------------
 # N20 magnetic encoder: 12 CPR (cycles per motor-shaft rev) per channel.
@@ -170,11 +172,16 @@ shared = {
     "duty_r": 0.0,
 }
 
-# v2: network diagnostics counters (written by the network thread).
+# Network diagnostics counters (written by the network thread).
 diag = {
     "rx_ok": 0,             # valid 8-byte command packets received
-    "rx_bad": 0,            # datagrams with the wrong size (format mismatch)
+    "rx_bad": 0,            # datagrams with the wrong size / NaN payload
 }
+
+# Set in main() so the network thread's WiFi watchdog can check and heal the
+# link, and so the keep-alive beacon knows where the gateway is.
+wlan_dev = None
+gateway_ip = None
 
 
 def _to_int32(v):
@@ -232,12 +239,14 @@ class Encoder:
     def __init__(self, pin_a, pin_b, count_key):
         self._phase_b = Pin(pin_b, Pin.IN)
         self._key = count_key
-        # v2 fix: keep a reference to the Phase A pin. The IRQ registration
-        # lives on the Pin object; in v1 it was a local that went out of
-        # scope as soon as __init__ returned.
+        # Keep a reference to the Phase A pin: the IRQ registration lives on
+        # the Pin object; v1 left it as a local that went out of scope.
         self._phase_a = Pin(pin_a, Pin.IN)
+        # Do NOT pass hard= : MicroPython v1.29.0 (ESP32-S3 build) rejects it
+        # with "TypeError: extra keyword arguments given". The default is
+        # already a soft, VM-scheduled callback, which is what we want.
         self._phase_a.irq(handler=self._on_a_rising,
-                          trigger=Pin.IRQ_RISING)   # soft IRQ: VM callback (see header)
+                          trigger=Pin.IRQ_RISING)
 
     def _on_a_rising(self, pin):
         if self._phase_b.value():
@@ -259,6 +268,22 @@ def wifi_connect():
     """Station-mode connect with timeout + retry; prints the IP on success."""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    # v2.4: disable modem sleep AND verify by reading it back. A silently
+    # sleeping radio is ARP-deaf: the PC gets "Destination host unreachable"
+    # even though the robot is online (observed on this exact unit: pm
+    # stayed at 1 = min-modem sleep).
+    try:
+        wlan.config(pm=network.WLAN.PM_NONE)
+    except (AttributeError, ValueError, OSError):
+        try:
+            wlan.config(pm=0)          # builds without the named constant
+        except (ValueError, OSError):
+            pass
+    try:
+        print("[WiFi] power-save mode =", wlan.config("pm"),
+              "(want 0; 1/2 = modem sleeps)")
+    except (ValueError, OSError):
+        print("[WiFi] power-save mode unreadable on this build")
     attempt = 0
     while True:
         attempt += 1
@@ -279,17 +304,13 @@ def wifi_connect():
 
 # ------------------------ Network thread (Core 0 role) -----------------------
 def network_thread():
-    """UDP command listener + 20 Hz telemetry streamer (v2: with diagnostics).
+    """UDP command listener + 20 Hz telemetry streamer, with diagnostics.
 
     Mirrors the Arduino core-0 networkTask: blocking-ish receive with a short
     timeout (so telemetry keeps its cadence on the same thread), parse 8-byte
     '<ff' commands, remember the sender, stream 24-byte '<ffiiff' telemetry
-    back to it every TELEMETRY_PERIOD_MS.
-
-    v2: counts valid/invalid datagrams and prints a status line every
-    NET_REPORT_PERIOD_MS so you can tell "no packets arriving" apart from
-    "packets arriving but all zero". Any crash is printed as [NET FAULT]
-    instead of killing the thread silently.
+    back to it every TELEMETRY_PERIOD_MS. Any crash is printed as
+    [NET FAULT] instead of killing the thread silently.
     """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -303,6 +324,7 @@ def network_thread():
         s.settimeout(0.005)
 
         remote = None
+        wifi_was_down = False
         last_telemetry = time.ticks_ms()
         last_report = time.ticks_ms()
         print("[NET ] listening on 0.0.0.0:%d -- waiting for first command"
@@ -367,10 +389,39 @@ def network_thread():
                 except OSError:
                     pass             # WiFi hiccup: drop one frame, keep going
 
-            # --- diagnostics @ 0.5 Hz ------------------------------------------
+            # --- WiFi watchdog (v2.2) ------------------------------------------
+            if wlan_dev is not None:
+                if not wlan_dev.isconnected():
+                    if not wifi_was_down:
+                        wifi_was_down = True
+                        print("[NET ] WiFi dropped -- reconnecting...")
+                    try:
+                        wlan_dev.disconnect()
+                        wlan_dev.connect(WIFI_SSID, WIFI_PASSWORD)
+                    except OSError:
+                        pass
+                elif wifi_was_down:
+                    wifi_was_down = False
+                    # IP may have changed -- the PC must target THIS address.
+                    print("[NET ] WiFi back, IP =", wlan_dev.ifconfig()[0])
+
+            # --- diagnostics + keep-alive beacon @ 0.5 Hz ----------------------
             if time.ticks_diff(now, last_report) >= NET_REPORT_PERIOD_MS:
                 last_report = now
-                print("[NET ] rx_ok=%d rx_bad=%d tgt=(%.1f, %.1f) "
+                # v2.4: keep-alive beacon. A robot that never transmits until
+                # commanded goes ARP-silent under modem sleep; forcing a TX
+                # every 2 s keeps the radio awake and the AP association
+                # warm. Sent to the gateway on an unused port -- nothing
+                # listens there; the transmission itself is the point.
+                if gateway_ip is not None:
+                    try:
+                        s.sendto(b"niro-beacon", (gateway_ip, 4211))
+                    except OSError:
+                        pass
+                # Targets printed via str() at full precision: a denormal
+                # decode (PC format bug) shows up as e.g. 8.6e-41 instead of
+                # rounding invisibly to 0.0.
+                print("[NET ] rx_ok=%d rx_bad=%d tgt=(%s, %s) "
                       "duty=(%.2f, %.2f) remote=%s"
                       % (diag["rx_ok"], diag["rx_bad"],
                          shared["target_l"], shared["target_r"],
@@ -397,7 +448,7 @@ def pid_loop():
     prev_ticks_r = shared["ticks_r"]
     integ_l = 0.0
     integ_r = 0.0
-    failsafe_active = False       # v2: for engage/clear prints
+    failsafe_active = False       # for engage/clear prints
 
     period_us = PID_PERIOD_MS * 1000
     next_tick = time.ticks_add(time.ticks_us(), period_us)
@@ -473,18 +524,25 @@ def pid_loop():
         shared["meas_r"] = rpm_r
 
         # --- drift-free 50 ms schedule ---------------------------------------
+        # v2.1: sleep in <=1 ms slices. A single 49 ms sleep_us busy-waits
+        # while holding the GIL, and so does the network thread's blocking
+        # recvfrom -- the two threads serialized each other and telemetry
+        # collapsed to ~10 Hz. Short slices hand the GIL over between them.
         remaining = time.ticks_diff(next_tick, time.ticks_us())
-        if remaining > 0:
-            time.sleep_us(remaining)
+        while remaining > 0:
+            time.sleep_us(remaining if remaining < 1000 else 1000)
+            remaining = time.ticks_diff(next_tick, time.ticks_us())
         next_tick = time.ticks_add(next_tick, period_us)
 
 
 # --------------------------------- Boot --------------------------------------
 def main():
-    print("=== ESP32-S3 diff-drive bot firmware v2 (diagnostics build) ===")
+    global wlan_dev, gateway_ip
+    print("=== ESP32-S3 diff-drive bot firmware v2.4 (diagnostics build) ===")
     motor_left.coast()       # start coasted, whatever the reset state was
     motor_right.coast()
-    wifi_connect()
+    wlan_dev = wifi_connect()
+    gateway_ip = wlan_dev.ifconfig()[2]    # default gateway (keep-alive target)
     shared["last_cmd_ms"] = time.ticks_ms()
 
     _thread.stack_size(8 * 1024)   # network thread stack (bytes)
