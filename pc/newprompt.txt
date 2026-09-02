@@ -1,0 +1,25 @@
+I have an ESP32-S3 board, two Pololu wheels, and two N20 DC gear motors with encoders. I want to develop a program that allows the robot to autonomously follow a predefined trajectory using a webcam mounted on the ceiling.
+
+The webcam should detect an ArUco-style mounted on top of the robot to determine the robot’s position and orientation. There will also be four additional fixed tags placed around the arena to define the boundaries and coordinate system of the robot’s operating area.
+
+The robot uses a two-wheel differential-drive configuration, with the driven wheels positioned on the sides/middle of the robot. Two ball casters are also used to support and balance the robot.I will provide the robot with a CSV trajectory file containing x, y, and theta values, for example:
+x          y           theta
+-0.600000  -0.450000   0
+-0.595181  -0.449957   0.017998
+-0.590361  -0.449827   0.035839
+-0.585542  -0.449611   0.053513
+-0.580723  -0.449311   0.071008
+Here, x and y represent the robot’s position in the arena coordinate system, while theta represents its heading angle. The coordinate convention should be:
+
+x = 0, y = 0, theta = 0° → robot is at the origin and facing the +X direction.
+x = 0, y = 0, theta = 90° → robot is at the origin and facing the +Y direction.
+x = 0, y = 0, theta = 180° → robot is at the origin and facing the −X direction.
+x = 0, y = 0, theta = 270° → robot is at the origin and facing the −Y direction.
+
+The system should continuously use the overhead webcam to detect the robot’s AprilTag and calculate its real-time x, y position and theta orientation. The four fixed AprilTags should be used to establish and calibrate the arena’s coordinate system and convert the camera coordinates into the required real-world coordinates.
+
+The robot should then follow the trajectory specified in the CSV file as accurately as possible. The program should compare the robot’s current detected position/orientation with the target x, y, theta from the CSV and calculate the required left and right wheel velocities. The ESP32-S3 should control the two N20 encoder motors using appropriate feedback control, such as PID control, while the encoders provide wheel-speed/position feedback.
+
+Please provide a complete system architecture and implementation approach, including the webcam/PC vision system, ArUco detection, arena coordinate transformation, trajectory tracking algorithm, communication between the PC and ESP32-S3, differential-drive kinematics, encoder feedback, PID control, motor commands, coordinate-frame conventions, handling of theta wrap-around, waypoint/trajectory progression, and safety/error handling.
+
+Also include wiring/pin recommendations for the ESP32-S3, required libraries, mathematical equations, communication protocol, example ESP32 code, example PC/Python code for AprilTag detection and trajectory tracking, and a clear step-by-step procedure for setting up and testing the complete system. The solution should be practical and robust enough to run the robot autonomously along the coordinates provided in the CSV file. it's better if all the code is in python
