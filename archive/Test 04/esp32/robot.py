@@ -39,12 +39,13 @@ ENC_R_B    = 10
 
 # Motor direction — set True to swap forward/reverse for a motor
 LEFT_INVERTED  = False
-RIGHT_INVERTED = False
+RIGHT_INVERTED = True
 
-# PID gains (tune experimentally — see README)
-KP = 2.0
-KI = 0.5
-KD = 0.05
+# PID gains (tuned for smooth, jitter-free N20 motor velocity control)
+KP = 0.6
+KI = 0.1
+KD = 0.0      # Zero to prevent discrete encoder quantization chattering
+KF = 0.45     # Feed-forward gain to provide instant, smooth baseline PWM
 
 # Loop timing
 LOOP_MS        = 20          # PID loop period → 50 Hz
@@ -105,9 +106,9 @@ class Robot:
         self.enc_left  = Encoder(ENC_L_A, ENC_L_B)
         self.enc_right = Encoder(ENC_R_A, ENC_R_B)
 
-        # PID controllers
-        self.pid_left  = PID(kp=KP, ki=KI, kd=KD)
-        self.pid_right = PID(kp=KP, ki=KI, kd=KD)
+        # PID controllers (PI + Feed-Forward for smooth velocity tracking)
+        self.pid_left  = PID(kp=KP, ki=KI, kd=KD, kf=KF)
+        self.pid_right = PID(kp=KP, ki=KI, kd=KD, kf=KF)
 
         # Target speeds (ticks/s, set by serial commands from PC)
         self.target_left  = 0.0
@@ -143,10 +144,9 @@ class Robot:
 
             # 2. Watchdog — stop if no recent command
             if time.ticks_diff(time.ticks_ms(), self._last_cmd_ms) > WATCHDOG_MS:
-                self.target_left  = 0.0
-                self.target_right = 0.0
+                self.stop()
 
-            # 3. Measure wheel speeds
+            # 3. Measure wheel speeds with low-pass filtering to eliminate quantization chatter
             dt_s = LOOP_MS / 1000.0
             enc_l = self.enc_left.count
             enc_r = self.enc_right.count
@@ -156,24 +156,29 @@ class Robot:
             self._prev_enc_l = enc_l
             self._prev_enc_r = enc_r
 
-            self.speed_left  = delta_l / dt_s
-            self.speed_right = delta_r / dt_s
+            raw_speed_l = delta_l / dt_s
+            raw_speed_r = delta_r / dt_s
+
+            # Low-pass filter (exponential moving average: 65% previous + 35% new)
+            self.speed_left  = 0.65 * self.speed_left  + 0.35 * raw_speed_l
+            self.speed_right = 0.65 * self.speed_right + 0.35 * raw_speed_r
 
             # 4. PID update → motor PWM
-            if abs(self.target_left) < DEADZONE_TPS and abs(self.speed_left) < DEADZONE_TPS * 2:
+            if abs(self.target_left) < DEADZONE_TPS:
                 pwm_l = 0
                 self.pid_left.reset()
+                self.driver.left.coast()
             else:
                 pwm_l = self.pid_left.update(self.target_left, self.speed_left, dt_s)
+                self.driver.left.set_speed(int(pwm_l))
 
-            if abs(self.target_right) < DEADZONE_TPS and abs(self.speed_right) < DEADZONE_TPS * 2:
+            if abs(self.target_right) < DEADZONE_TPS:
                 pwm_r = 0
                 self.pid_right.reset()
+                self.driver.right.coast()
             else:
                 pwm_r = self.pid_right.update(self.target_right, self.speed_right, dt_s)
-
-            self.driver.left.set_speed(int(pwm_l))
-            self.driver.right.set_speed(int(pwm_r))
+                self.driver.right.set_speed(int(pwm_r))
 
             # 5. Send feedback to PC (at reduced rate)
             self._loop_count += 1
@@ -206,7 +211,11 @@ class Robot:
                 self._rx_buf += ch
 
     def _parse_command(self, line):
-        """Parse a CMD:<vl>,<vr> command."""
+        """Parse a CMD:<vl>,<vr> or STOP command."""
+        if line == "STOP":
+            self.stop()
+            self._last_cmd_ms = time.ticks_ms()
+            return
         if not line.startswith("CMD:"):
             return
         try:
@@ -214,6 +223,8 @@ class Robot:
             self.target_left  = float(parts[0])
             self.target_right = float(parts[1])
             self._last_cmd_ms = time.ticks_ms()
+            if abs(self.target_left) < DEADZONE_TPS and abs(self.target_right) < DEADZONE_TPS:
+                self.stop()
         except (ValueError, IndexError):
             pass   # ignore malformed commands
 

@@ -57,14 +57,30 @@ class RobotSerial:
         print("[SERIAL] Timeout waiting for READY.")
         return False
 
+    def stop_motors(self):
+        """Actively stop both motors."""
+        if not self.ser or not self.ser.is_open:
+            return
+        try:
+            for _ in range(5):
+                self.ser.write(b"STOP\nCMD:0.0,0.0\n")
+                self.ser.flush()
+                time.sleep(0.02)
+        except Exception:
+            pass
+
     def disconnect(self):
         """Stop motors and close the port."""
         if self.ser and self.ser.is_open:
             try:
-                self.send_command(0, 0)
+                self.stop_motors()
             except Exception:
                 pass
-            self.ser.close()
+            try:
+                time.sleep(0.05)
+                self.ser.close()
+            except Exception:
+                pass
         self._connected = False
         print("[SERIAL] Disconnected.")
 
@@ -81,6 +97,7 @@ class RobotSerial:
         msg = f"CMD:{v_left_tps:.1f},{v_right_tps:.1f}\n"
         try:
             self.ser.write(msg.encode("ascii"))
+            self.ser.flush()
         except serial.SerialException as e:
             print(f"[SERIAL] Write error: {e}")
             self._connected = False

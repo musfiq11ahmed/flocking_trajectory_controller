@@ -144,17 +144,37 @@ class DiagnosticSerial:
     def close(self):
         if self.ser and self.ser.is_open:
             try:
-                self.send_command(0.0, 0.0)
+                self.stop_motors()
             except Exception:
                 pass
-            self.ser.close()
+            try:
+                time.sleep(0.05)
+                self.ser.close()
+            except Exception:
+                pass
 
     def send_command(self, left_tps: float, right_tps: float):
-        """Sends CMD:<left>,<right>\\n command to ESP32."""
+        """Sends CMD:<left>,<right>\n command to ESP32."""
         if not self.ser or not self.ser.is_open:
             return
         msg = f"CMD:{left_tps:.1f},{right_tps:.1f}\n"
-        self.ser.write(msg.encode("ascii"))
+        try:
+            self.ser.write(msg.encode("ascii"))
+            self.ser.flush()
+        except Exception:
+            pass
+
+    def stop_motors(self):
+        """Actively stops motors by bursting STOP and CMD:0.0,0.0."""
+        if not self.ser or not self.ser.is_open:
+            return
+        try:
+            for _ in range(6):
+                self.ser.write(b"STOP\nCMD:0.0,0.0\n")
+                self.ser.flush()
+                time.sleep(0.02)
+        except Exception:
+            pass
 
     def readline(self) -> Optional[str]:
         """Reads one newline-delimited line from the serial buffer."""
@@ -193,7 +213,7 @@ class DiagnosticSerial:
 # Diagnostic Runner Class
 # ─────────────────────────────────────────────────────────────────────────────
 class RobotDiagnosticRunner:
-    def __init__(self, port: str, baud: int = 115200, speed: float = 150.0, duration: float = 1.2):
+    def __init__(self, port: str, baud: int = 115200, speed: float = 1000.0, duration: float = 1.2):
         self.port = port
         self.baud = baud
         self.speed = speed
@@ -240,11 +260,11 @@ class RobotDiagnosticRunner:
         self.log_step(2, "ESP32 Firmware Handshake & Telemetry")
         print("  Listening for boot announcement ('READY') or periodic telemetry ('FB:')...")
 
-        # Listen for up to 3.0 seconds
-        t_end = time.time() + 3.0
+        # Listen for up to 2.5 seconds
+        t_end = time.time() + 2.5
         got_ready = False
         got_fb = False
-        sample_line = ""
+        sample_lines: List[str] = []
 
         # Probe with CMD:0,0 to trigger active responses if already in loop
         self.comm.send_command(0.0, 0.0)
@@ -252,9 +272,10 @@ class RobotDiagnosticRunner:
         while time.time() < t_end:
             line = self.comm.readline()
             if line:
-                sample_line = line
+                sample_lines.append(line)
                 if "READY" in line:
                     got_ready = True
+                    break
                 if line.startswith("FB:"):
                     got_fb = True
                     break
@@ -267,16 +288,55 @@ class RobotDiagnosticRunner:
             self.results.append(TestResult("Firmware Handshake", "PASS", status_text))
             return True
 
-        # Check if MicroPython REPL prompt is visible
-        if ">>>" in sample_line:
-            msg = "ESP32 is in MicroPython REPL mode ('>>>'). 'main.py' is not running."
-            fix = "Upload robot.py and main.py to ESP32 flash and reset the board."
+        # Check if ESP32 is sitting at MicroPython REPL prompt
+        all_text = " ".join(sample_lines)
+        is_repl = any(k in all_text for k in [">>>", "File \"<stdin>\"", "SyntaxError", "MicroPython", "raw REPL"])
+
+        if is_repl or len(sample_lines) == 0:
+            print(f"  {tag_info()} ESP32 is at MicroPython REPL prompt. Triggering soft-reboot (Ctrl-D) to start main.py...")
+            try:
+                # Send Ctrl-C twice to clear buffer, then Ctrl-D for soft-reboot
+                if self.comm.ser and self.comm.ser.is_open:
+                    self.comm.ser.write(b"\x03\x03\x04")
+                    self.comm.ser.flush()
+            except Exception:
+                pass
+
+            # Listen for up to 3.5 seconds after soft reboot
+            t_reboot_end = time.time() + 3.5
+            reboot_output: List[str] = []
+            while time.time() < t_reboot_end:
+                line = self.comm.readline()
+                if line:
+                    reboot_output.append(line)
+                    if "READY" in line:
+                        print(f"  {tag_pass()} main.py started successfully after soft-reboot!")
+                        self.results.append(TestResult("Firmware Handshake", "PASS", "Launched main.py via soft-reboot"))
+                        return True
+                    if line.startswith("FB:"):
+                        print(f"  {tag_pass()} Telemetry stream active after soft-reboot!")
+                        self.results.append(TestResult("Firmware Handshake", "PASS", "Telemetry active after soft-reboot"))
+                        return True
+                time.sleep(0.03)
+
+            # Check if an exception was thrown on boot
+            tb_lines = [l for l in reboot_output if any(e in l for e in ["Traceback", "Error", "Exception", "ImportError"])]
+            if tb_lines:
+                msg = f"main.py crashed during startup: {' | '.join(tb_lines[:3])}"
+                fix = "Check files on ESP32 flash. Upload pid.py, motor.py, robot.py, and main.py."
+                print(f"  {tag_fail()} {msg}")
+                self.results.append(TestResult("Firmware Handshake", "FAIL", msg, fix))
+                return False
+
+            msg = "ESP32 soft-rebooted but 'main.py' did not run or print READY."
+            fix = "Ensure main.py is uploaded to root of ESP32 flash: 'mpremote connect COM13 cp esp32/main.py :main.py'"
             print(f"  {tag_fail()} {msg}")
             self.results.append(TestResult("Firmware Handshake", "FAIL", msg, fix))
             return False
 
-        msg = f"No telemetry received within 3.0s (Last received: '{sample_line}')."
-        fix = "Verify ESP32 has main.py running. Try pressing the EN/RST button on the ESP32."
+        last_line = sample_lines[-1] if sample_lines else "None"
+        msg = f"No telemetry received within 3.0s (Last received: '{last_line}')."
+        fix = "Press the EN / RST button on the ESP32 to restart main.py."
         print(f"  {tag_fail()} {msg}")
         self.results.append(TestResult("Firmware Handshake", "FAIL", msg, fix))
         return False
@@ -424,7 +484,7 @@ class RobotDiagnosticRunner:
             time.sleep(0.033)
 
         # Immediate stop command
-        self.comm.send_command(0.0, 0.0)
+        self.comm.stop_motors()
 
         # Calculate deltas
         delta_l = latest_l - start_l
@@ -622,8 +682,8 @@ class RobotDiagnosticRunner:
                         break
             time.sleep(0.02)
 
-        # Restore comms
-        self.comm.send_command(0.0, 0.0)
+        # Restore comms and actively halt motors
+        self.comm.stop_motors()
 
         if timeout_triggered:
             details = f"Watchdog engaged at {elapsed_to_stop*1000:.0f} ms (target: ~500 ms)"
@@ -655,8 +715,8 @@ class RobotDiagnosticRunner:
     # ── Final Report Generation ──────────────────────────────────────────────
     def print_summary(self):
         self.log_header("HARDWARE DIAGNOSTIC SUMMARY REPORT")
-        print(f"{'TEST NAME':<30} | {'STATUS':<10} | {'DETAILS':<35}")
-        print(f"{'-'*30}-+-{'-'*10}-+-{'-'*35}")
+        print(f"{'TEST NAME':<26} | {'STATUS':<8} | {'DETAILS':<65}")
+        print(f"{'-'*26}-+-{'-'*8}-+-{'-'*65}")
 
         passes = 0
         fails = 0
@@ -673,11 +733,10 @@ class RobotDiagnosticRunner:
             badge_str = f"{Color.GREEN}PASS{Color.RESET}" if res.status == "PASS" else (
                 f"{Color.RED}FAIL{Color.RESET}" if res.status == "FAIL" else f"{Color.YELLOW}WARN{Color.RESET}"
             )
-            # Truncate details if overly long
-            det = (res.details[:32] + "...") if len(res.details) > 35 else res.details
-            print(f"{res.name:<30} | {badge_str:<19} | {det:<35}")
+            det = (res.details[:62] + "...") if len(res.details) > 65 else res.details
+            print(f"{res.name:<26} | {badge_str:<17} | {det:<65}")
 
-        print(f"{'-'*30}-+-{'-'*10}-+-{'-'*35}")
+        print(f"{'-'*26}-+-{'-'*8}-+-{'-'*65}")
         print(f"Total: {len(self.results)} | {Color.GREEN}Passed: {passes}{Color.RESET} | "
               f"{Color.RED}Failed: {fails}{Color.RESET} | {Color.YELLOW}Warnings: {warns}{Color.RESET}\n")
 
@@ -752,8 +811,8 @@ class RobotDiagnosticRunner:
             print(f"\n{Color.YELLOW}[!] Test interrupted by user (Ctrl+C). Stopping motors...{Color.RESET}")
         finally:
             if self.comm:
-                self.comm.send_command(0.0, 0.0)
-                time.sleep(0.1)
+                self.comm.stop_motors()
+                time.sleep(0.05)
                 self.comm.close()
 
         self.print_summary()

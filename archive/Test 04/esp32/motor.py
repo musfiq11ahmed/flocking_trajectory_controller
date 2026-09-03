@@ -24,7 +24,7 @@ class Motor:
         If True, swap forward / reverse direction.
     """
 
-    def __init__(self, in1_pin, in2_pin, freq=20_000, inverted=False):
+    def __init__(self, in1_pin, in2_pin, freq=1000, inverted=False):
         self.pwm1 = PWM(Pin(in1_pin), freq=freq, duty=0)
         self.pwm2 = PWM(Pin(in2_pin), freq=freq, duty=0)
         self.inverted = inverted
