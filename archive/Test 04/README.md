@@ -108,8 +108,8 @@ pip install opencv-contrib-python numpy pyserial
 2. Flash with `esptool`:
    ```bash
    pip install esptool
-   python -m esptool --chip esp32s3 --port COM3 erase-flash
-   python -m esptool --chip esp32s3 --port COM3 write_flash -z 0x0 ESP32_GENERIC_S3-*.bin
+   python -m esptool --chip esp32s3 --port COM13 erase-flash
+   python -m esptool --chip esp32s3 --port COM13 write_flash -z 0x0 ESP32_GENERIC_S3-20260824-v1.29.0.bin
    ```
 3. Verify: open Thonny → select MicroPython (ESP32) → you should see the REPL.
 
@@ -120,13 +120,13 @@ Using **Thonny** (easiest) or **mpremote**:
 ```bash
 # With mpremote:
 pip install mpremote
-mpremote connect COM3 cp esp32/pid.py :pid.py
-mpremote connect COM3 cp esp32/motor.py :motor.py
-mpremote connect COM3 cp esp32/robot.py :robot.py
-mpremote connect COM3 cp esp32/main.py :main.py
+mpremote connect COM13 cp esp32/pid.py :pid.py
+mpremote connect COM13 cp esp32/motor.py :motor.py
+mpremote connect COM13 cp esp32/robot.py :robot.py
+mpremote connect COM13 cp esp32/main.py :main.py
 ```
 
-After uploading, **reset** the ESP32.  Its `main.py` will run automatically
+After uploading, **reset** the ESP32. Its `main.py` will run automatically
 and print `READY` over USB serial.
 
 ### 4. Print ArUco markers
@@ -183,13 +183,32 @@ is enough for the 2.74 m arena width.
 
 ---
 
+## Hardware Diagnostics (Component Test)
+
+Before running the full vision and trajectory system, verify that all robot hardware components (ESP32 USB connection, motor rotation, encoder direction, comms latency, braking, watchdog) are functional while the robot remains connected over USB.
+
+1. **Elevate the robot** on a stand, box, or cup so that both wheels can spin freely in the air.
+2. Run the diagnostic suite:
+
+```bash
+# From workspace root:
+python test_robot.py --port COM13
+
+# Or list detected serial ports:
+python test_robot.py --list-ports
+```
+
+The script runs 11 automated diagnostic tests and outputs a clear **PASS / FAIL / WARN** summary with targeted remediation steps if any hardware check fails.
+
+---
+
 ## Running the System
 
 ### Quick Start
 
 ```bash
 cd "d:\NIRO\flocking test\pc"
-python main.py --port COM3 --trajectory ../trajectories/sample_trajectory.csv
+python main.py --port COM13 --trajectory ../trajectories/sample_trajectory.csv
 ```
 
 ### Vision-Only Debug (no ESP32 needed)
