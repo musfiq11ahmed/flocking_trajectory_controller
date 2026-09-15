@@ -360,6 +360,25 @@ class CameraPoseSource(object):
     # -- debug ---------------------------------------------------------------
     def _show_debug(self, frame, detections, H, pose, measured):
         vis = frame.copy()
+        h_img, w_img = vis.shape[:2]
+
+        # --- aim assist: center crosshair + per-marker visibility strip ----
+        # Point the camera so the crosshair lands on the arena CENTER and all
+        # five indicators are green. (C280 FOV = ~77x48 deg; at 8 ft that
+        # covers ~3.9 x 2.2 m, plenty for the 2.71 x 1.73 m arena IF the
+        # camera is landscape-oriented and aimed at the center.)
+        cx, cy = w_img // 2, h_img // 2
+        cv2.drawMarker(vis, (cx, cy), (255, 255, 255),
+                       cv2.MARKER_CROSS, 50, 2)
+        cv2.putText(vis, "aim: arena center here", (cx + 30, cy - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        x0 = w_img - 5 * 70 - 20
+        for i, marker_id in enumerate([0, 1, 2, 3, 4]):
+            found = marker_id in detections
+            color = (0, 200, 0) if found else (0, 0, 200)
+            cv2.putText(vis, str(marker_id), (x0 + i * 70, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+
         for marker_id, corners in detections.items():
             pts = corners.astype(np.int32).reshape((-1, 1, 2))
             color = (0, 0, 255) if marker_id == ROBOT_MARKER_ID else (0, 255, 0)
