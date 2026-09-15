@@ -186,9 +186,10 @@ class CameraPoseSource(object):
 
     def __init__(self, camera_index=0, max_hold_s=DEFAULT_MAX_HOLD_S,
                  h_max_age_s=DEFAULT_H_MAX_AGE_S, debug_view=False,
-                 width=CAMERA_WIDTH, height=CAMERA_HEIGHT, fps=CAMERA_FPS,
+                 width=CAMERA_WIDTH, height=CAMERA_HEIGHT, fps=0,
                  mjpeg=True, focus=None, exposure=None, latency_s=0.0,
-                 latency_frames=LATENCY_FRAMES, track_m=TRACK_WIDTH_M):
+                 latency_frames=LATENCY_FRAMES, track_m=TRACK_WIDTH_M,
+                 use_clahe=True):
         self.max_hold_s = max_hold_s
         self.h_max_age_s = h_max_age_s
         self.debug_view = debug_view
