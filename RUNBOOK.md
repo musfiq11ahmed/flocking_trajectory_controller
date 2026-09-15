@@ -1,0 +1,172 @@
+# RUNBOOK — ESP32-S3 Diff-Drive Bot: From Zero to Vision-Guided S-Curve
+
+Complete step-by-step procedure. Use these canonical files (ignore older
+duplicates elsewhere in the folder):
+
+```
+firmware/robot_firmware.py      -> deploy to ESP32 as main.py (PID + UDP)
+firmware/motor_test_esp32.py    -> WiFi motor diagnostic (swap-in main.py)
+firmware/motor_test.py          -> USB version of the same diagnostic
+pc/udp_protocol.py              -> shared protocol (no need to run)
+pc/test_suite.py                -> tests 0-5 + camera navigation
+pc/camera_pose.py               -> overhead ArUco pose source
+pc/motor_test_pc.py             -> PC side of the WiFi motor diagnostic
+pc/generate_scurve_csv.py       -> regenerates scurve_trajectory.csv
+pc/scurve_trajectory.csv        -> 250 waypoints (already generated)
+```
+
+---
+
+## PART A — One-time setup
+
+### A1. PC software
+```bash
+pip install esptool mpremote
+pip install opencv-contrib-python numpy     # camera mode only
+```
+(Python 3.9+ recommended. Everything else is stdlib.)
+
+### A2. Flash MicroPython on the ESP32-S3 (once per board)
+Download the `.bin` from https://micropython.org/download/ESP32_GENERIC_S3/
+then, with the bot connected by USB:
+```bash
+esptool.py --chip esp32s3 --port COM13 erase_flash
+esptool.py --chip esp32s3 --port COM13 write_flash -z 0x0 ESP32_GENERIC_S3-<version>.bin
+```
+(Use your actual port: COMx on Windows, /dev/ttyUSB0 or /dev/ttyACM0 on Linux.)
+
+### A3. Wiring check
+Verify against README.md section 1: DRV8833 VM from the 5 V buck (NOT from
+3V3), STBY hardwired to 3V3, common GND everywhere, encoders on 3V3, and
+GPIO 0/3/43/44/46 untouched.
+
+### A4. Deploy the robot firmware
+`robot_firmware.py` already contains your WiFi credentials
+(`WIFI_SSID`/`WIFI_PASSWORD` at the top — edit if they change).
+```bash
+mpremote connect COM13 fs cp firmware/robot_firmware.py :main.py
+mpremote connect COM13 reset
+```
+Then watch the boot log and **write down the IP address**:
+```bash
+mpremote connect COM13 repl
+# ... [WiFi] connected, IP = 192.168.x.x   (Ctrl-] to exit)
+```
+
+---
+
+## PART B — Verify the hardware (motors + WiFi link)
+
+Do these once after any wiring/firmware change. Lift the wheels off the
+ground for B1–B3.
+
+### B1. Open-loop motor diagnostic (choose one)
+Over WiFi (no cable; temporarily swap firmware):
+```bash
+mpremote connect COM13 fs cp firmware/motor_test_esp32.py :main.py
+mpremote connect COM13 reset
+python3 pc/motor_test_pc.py --discover
+python3 pc/motor_test_pc.py --ip 192.168.x.x
+# when done, restore the PID firmware:
+mpremote connect COM13 fs cp firmware/robot_firmware.py :main.py
+mpremote connect COM13 reset
+```
+Or over USB (no firmware swap): `mpremote connect COM13 run firmware/motor_test.py`
+
+PASS = RPM rises clearly with duty (≈40 RPM @ 0.40 → 100+ @ 1.00).
+
+### B2. WiFi control-loop tests (PID firmware running)
+```bash
+python3 pc/test_suite.py --test 0 --ip 192.168.x.x   # link check
+python3 pc/test_suite.py --test 1 --ip 192.168.x.x   # open-loop sanity
+python3 pc/test_suite.py --test 2 --ip 192.168.x.x   # step response (logs CSV)
+python3 pc/test_suite.py --test 3 --ip 192.168.x.x   # straight + turn
+python3 pc/test_suite.py --test 5 --ip 192.168.x.x   # failsafe (IMPORTANT)
+```
+Do NOT drive untethered until Test 5 passes (500 ms command-loss → coast).
+
+---
+
+## PART C — Camera & arena setup (once)
+
+### C1. Place the ArUco markers
+- Print markers 0–3 (DICT_4X4_50) and fix them at the arena corners
+  **matching their filenames**: 0 = bottom-left, 1 = bottom-right,
+  2 = top-right, 3 = top-left. Flat, unoccluded, with a white quiet zone
+  around each.
+- Fix marker 4 flat on top of the robot, **printed top edge pointing to the
+  robot's FRONT**.
+- The 106.5 in × 68 in dimensions are measured marker-CENTER to center.
+
+### C2. Mount the camera
+Rapoo C280 above the arena, aimed at the center, all four corner markers
+comfortably in frame, as perpendicular as possible. Fix it rigidly.
+
+### C3. Validate the vision pipeline (no robot needed)
+```bash
+python3 pc/camera_pose.py --index 0 --debug-view
+```
+(If you have a built-in webcam, try `--index 1`.)
+- Green boxes on markers 0–3, red on marker 4; pose prints at 5 Hz.
+- Move the robot by hand: x should run 0 → 2.705 m left-to-right,
+  y −0.864 → +0.864 m bottom-to-top; rotate it and watch theta.
+- Tracking rate should stay near 100 %. Ctrl-C to quit.
+
+---
+
+## PART D — Run the S-curve trajectory
+
+### D1. (Optional) Dry-run in simulation first
+```bash
+python3 pc/test_suite.py --test 4 --ip 192.168.x.x
+```
+(`--pose sim` is the default; a connected robot follows simulated commands —
+lift the wheels if you don't want it driving yet.)
+
+### D2. Real vision-guided run
+1. Robot powered, PID firmware running (from A4/B1 restore), on the arena
+   floor — **any position, any orientation**.
+2. PC and robot on the same 2.4 GHz network; webcam plugged in.
+3. Run:
+```bash
+python3 pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
+    --wp-timeout 8 --home-timeout 20 --debug-view
+```
+
+What you will see:
+1. CSV loads, waypoints shift into the arena frame (file on disk untouched).
+2. **HOMING**: the robot drives from wherever it sits to the trajectory
+   origin (0.753, −0.450), then pivots to face 0.00 rad.
+3. **PATH**: follows all 250 waypoints at 20 Hz; each leg is computed from
+   the camera-measured pose, so any error at one waypoint is compensated on
+   the way to the next (the CSV is never modified). A waypoint not reached
+   within 8 s is skipped and its error rolls into the next leg.
+4. The robot coasts at the end; PASS requires final error ≤ 0.10 m.
+
+Abort any time with **Ctrl-C** (the firmware failsafe coasts the robot
+within 500 ms of command loss; camera loss also aborts + coasts).
+
+---
+
+## Quick reference: daily operation (after one-time setup)
+
+```bash
+# 1. power the robot (robot_firmware.py auto-runs), put it anywhere in the arena
+# 2. check vision (optional):
+python3 pc/camera_pose.py --index 0 --debug-view
+# 3. run:
+python3 pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
+    --wp-timeout 8 --home-timeout 20 --debug-view
+```
+
+## Troubleshooting
+
+| Symptom | First thing to check |
+|---|---|
+| `cannot open camera index 0` | Wrong index (try 1), or another app owns the webcam |
+| `no reply from <ip>:4211` (motor test) | ESP32 running motor_test_esp32.py? Same 2.4 GHz network? |
+| No telemetry in test 0 | Robot IP changed? Check DHCP reservation / REPL boot log |
+| Wheels dead but camera fine | Run B1 diagnostic — DRV8833 VM power path |
+| `arena corner markers not all visible` | Marker placement/lighting; check with --debug-view |
+| Robot hunts near origin | Normal: 0.15 m/s anti-stall floor; homing aligns in stage 1b |
+| Waypoints outside arena warning | CSV scale/frame — see ARENA_GEOMETRY.md |
