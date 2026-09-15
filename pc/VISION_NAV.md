@@ -35,9 +35,39 @@ pip install opencv-contrib-python numpy   # camera mode only; sim is stdlib-only
 ```bash
 python3 camera_pose.py --index 0 --debug-view
 ```
-Prints the live pose at 5 Hz plus a tracking-rate percentage. Move the robot
-by hand and sanity-check coordinates against a tape measure. `--debug-view`
-opens an annotated window (green = arena markers, red = robot marker).
+Prints the live pose at 5 Hz plus **measured FPS**, the latency compensation
+applied, and a tracking-rate percentage. `--debug-view` opens an annotated
+window (green = arena markers, red = robot marker, both the measured and the
+latency-compensated pose).
+
+Camera configuration (fixed by `camera_pose.py`, per project requirements):
+- **2560×1440 MJPEG** — MJPEG is set *before* resolution (driver quirk);
+  uncompressed 2K over USB would only reach a few FPS.
+- **Autofocus and auto-exposure are always disabled.** Dial in manual values
+  for the ~8 ft ceiling distance and keep them:
+  ```bash
+  python3 camera_pose.py --index 0 --debug-view --focus 40 --exposure -6
+  ```
+  (`--focus` scale is device-specific, often 0–255: sweep values until the
+  markers are sharpest / tracking rate peaks. `--exposure`: on Linux/V4L2 an
+  absolute value; on Windows/DirectShow log2 seconds, e.g. `-6` ≈ 1/64 s.)
+- All four corner markers must stay in frame at all times — the pose source
+  aborts + coasts if they are lost for more than 2 s.
+
+**Latency compensation (critical).** The detected pose is a *delayed*
+measurement — at 0.30 m/s and 10 FPS the robot moves several cm per frame.
+`read()` therefore never returns the raw detection: it measures the real
+frame period online, estimates end-to-end latency (default 1.5 × frame
+period, override with `--latency-s`), and **dead-reckons the pose forward**
+using the wheel speeds currently being commanded. The control law always
+works on an estimate of where the robot is *now*. To tune: check the
+`lat=` value in preview, and if the robot consistently overshoots/undershoots
+waypoints along the direction of travel, adjust `--latency-s` by ±50 ms.
+Reuse your tuned values in the navigation run:
+```bash
+python3 test_suite.py --test 4 --pose camera --ip <robot_ip> \
+    --wp-timeout 8 --home-timeout 20 --latency-s 0.150 --focus 40 --debug-view
+```
 
 ## Step 2 — dry-run the full pipeline in simulation
 

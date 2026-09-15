@@ -99,18 +99,27 @@ Do NOT drive untethered until Test 5 passes (500 ms command-loss → coast).
 - The 106.5 in × 68 in dimensions are measured marker-CENTER to center.
 
 ### C2. Mount the camera
-Rapoo C280 above the arena, aimed at the center, all four corner markers
-comfortably in frame, as perpendicular as possible. Fix it rigidly.
+Rapoo C280 on the ceiling (~8 ft / 2.4 m above the arena), aimed at the
+arena center, ALL FOUR corner markers comfortably in frame at all times.
+Fix it rigidly. The software forces 2560×1440 MJPEG, disables autofocus and
+auto-exposure, and compensates camera latency in the control loop — but a
+stable mount and constant lighting are still essential.
 
 ### C3. Validate the vision pipeline (no robot needed)
 ```bash
 python3 pc/camera_pose.py --index 0 --debug-view
 ```
 (If you have a built-in webcam, try `--index 1`.)
+- Check the startup line: it should report `got 2560x1440@30` (MJPEG).
 - Green boxes on markers 0–3, red on marker 4; pose prints at 5 Hz.
 - Move the robot by hand: x should run 0 → 2.705 m left-to-right,
   y −0.864 → +0.864 m bottom-to-top; rotate it and watch theta.
-- Tracking rate should stay near 100 %. Ctrl-C to quit.
+- Watch `fps=` (should be high and STABLE) and `track=` (~100 %).
+- Lock in focus/exposure for the 8 ft distance (fixed thereafter):
+  `python3 pc/camera_pose.py --index 0 --debug-view --focus 40 --exposure -6`
+  (sweep --focus until markers are sharpest; note both values for step D2)
+- Note the `lat=` latency estimate; if you later see systematic overshoot
+  along the travel direction, set it explicitly with `--latency-s`.
 
 ---
 
@@ -127,10 +136,10 @@ lift the wheels if you don't want it driving yet.)
 1. Robot powered, PID firmware running (from A4/B1 restore), on the arena
    floor — **any position, any orientation**.
 2. PC and robot on the same 2.4 GHz network; webcam plugged in.
-3. Run:
+3. Run (add the --focus/--exposure/--latency-s values you tuned in C3):
 ```bash
 python3 pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
-    --wp-timeout 8 --home-timeout 20 --debug-view
+    --wp-timeout 8 --home-timeout 20 --focus 40 --debug-view
 ```
 
 What you will see:

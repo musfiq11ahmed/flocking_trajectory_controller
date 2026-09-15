@@ -723,7 +723,8 @@ def _apply_arena_frame_offset(waypoints):
 def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003,
                        pose_mode="sim", frame_offset=True, wp_timeout_s=0.0,
                        camera_index=0, debug_view=False, home_first=True,
-                       home_timeout_s=0.0):
+                       home_timeout_s=0.0, latency_s=0.0, focus=None,
+                       exposure=None):
     print("\n=== TEST 4: Waypoint navigation (S-curve) ===")
     try:
         waypoints = load_waypoints(csv_path)
@@ -950,6 +951,19 @@ def main():
                         help="test 4: abort + coast if the origin is not "
                              "reached within this many seconds (0 = no "
                              "limit, default; ~20 s recommended for camera)")
+    parser.add_argument("--latency-s", type=float, default=0.0,
+                        help="test 4 camera mode: explicit end-to-end camera "
+                             "latency in s used to predict the pose forward "
+                             "(0 = auto: 1.5 x measured frame period). "
+                             "Tune with camera_pose.py preview first.")
+    parser.add_argument("--focus", type=float, default=None,
+                        help="test 4 camera mode: manual focus value "
+                             "(device scale, often 0-255; autofocus is "
+                             "always disabled)")
+    parser.add_argument("--exposure", type=float, default=None,
+                        help="test 4 camera mode: manual exposure value "
+                             "(device scale; auto-exposure is always "
+                             "disabled)")
     args = parser.parse_args()
 
     t4_opts = {
@@ -960,6 +974,9 @@ def main():
         "debug_view": args.debug_view,
         "home_first": not args.no_home_first,
         "home_timeout_s": args.home_timeout,
+        "latency_s": args.latency_s,
+        "focus": args.focus,
+        "exposure": args.exposure,
     }
 
     ip = args.ip
