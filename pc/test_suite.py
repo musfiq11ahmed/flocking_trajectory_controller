@@ -5,7 +5,8 @@ Tests (SPEC.md section 3.3):
     1 - Open-loop sanity (wheels off the ground)
     2 - Closed-loop step response (logs CSV)
     3 - Differential maneuvers (straight + turn in place)
-    4 - Waypoint navigation simulator (S-curve CSV, simulated pose feedback)
+    4 - Waypoint navigation (S-curve CSV; --pose sim uses simulated feedback,
+        --pose camera uses the overhead ArUco webcam via camera_pose.py)
     5 - Failsafe check (command loss -> coast)
 
 Usage:
@@ -45,6 +46,18 @@ K_ALPHA = 4.0                  # unicycle gain: w   = K_ALPHA * heading_error
 EMA_ALPHA = 0.5                # pose EMA filter coefficient (0 < a <= 1)
 
 FINAL_ALIGN_RADIUS_M = 0.15    # inside this radius, steer to waypoint theta
+HOME_POS_TOL_M = 0.15          # homing "arrived" radius (anti-stall floor
+                               # prevents parking tighter than this)
+HOME_HEADING_TOL_RAD = 0.15    # homing done when |heading error| < this
+
+# --- Arena frame (ARENA_GEOMETRY.md; camera mode, Test 4) --------------------
+# scurve_trajectory.csv was generated centered on the arena CENTER, but the
+# camera frame has its origin at the LEFT-edge midpoint. Shifting x by half
+# the arena width maps the CSV into the camera frame; the file on disk is
+# never modified. 1 in = 0.0254 m exactly.
+ARENA_WIDTH_M = 106.5 * 0.0254                  # 2.7051 m (left -> right edge)
+ARENA_HALF_HEIGHT_M = 34.0 * 0.0254             # 0.8636 m (half of 68 in)
+ARENA_FRAME_OFFSET_X_M = ARENA_WIDTH_M / 2.0    # 1.35255 m: CSV center -> left edge
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CSV = os.path.join(SCRIPT_DIR, "scurve_trajectory.csv")
@@ -498,21 +511,133 @@ def load_waypoints(csv_path):
     return waypoints
 
 
-def run_waypoint_navigation(link, waypoints, pose_source, noise_desc=""):
-    """Core navigation loop shared by Test 4 and (later) the camera pipeline.
+def run_waypoint_navigation(link, waypoints, pose_source, noise_desc="",
+                            wp_timeout_s=0.0, home_first=True,
+                            home_timeout_s=0.0):
+    """Core navigation loop shared by Test 4 and the camera pipeline.
 
     Streams wheel RPM commands over UDP at 20 Hz; advances to the next
     waypoint when the filtered pose is within ARRIVAL_TOLERANCE_M of it.
+
+    PHASE 1 -- homing (home_first=True, the default): wherever the robot was
+    left in the arena, it FIRST drives to the trajectory origin (waypoint #0)
+    and aligns to the origin heading before the path starts. Homing is never
+    skipped by wp_timeout_s -- only an explicit home_timeout_s aborts the run
+    (with a coast) if the origin proves unreachable. After homing, waypoint
+    following starts at waypoint #1.
+
+    PHASE 2 -- waypoint following. Error compensation is per-waypoint by
+    construction: every cycle the control law runs from the MEASURED pose
+    toward the CURRENT target waypoint, so if the robot lands at B+2 instead
+    of B, the next command is computed (B+2) -> C -- the offset is absorbed
+    by the next leg and the waypoint list itself is never modified.
+
+    wp_timeout_s > 0 adds a per-waypoint time limit: if a waypoint is not
+    reached within that time (systematic offset, obstacle, wheel slip),
+    the loop advances anyway and logs the residual error, so one missed
+    point cannot stall the run -- the miss is compensated on the next leg.
     """
     filt = EmaPoseFilter(EMA_ALPHA)
     wp_index = 0
     t_start = time.monotonic()
     t_prev = t_start
     last_print = t_start
+    wp_deadline = t_start + wp_timeout_s if wp_timeout_s > 0.0 else None
     telem = None
 
-    print("  Homing to origin waypoint #0 at (%.3f, %.3f, %.2f rad)..."
-          % waypoints[0])
+    # ---------------- Phase 1: explicit homing to the origin ----------------
+    if home_first and len(waypoints) > 1:
+        ox, oy, otheta = waypoints[0]
+        print("  HOMING: robot may start anywhere in the arena -- driving to "
+              "trajectory origin (%.3f, %.3f), aligning to %.2f rad first"
+              % (ox, oy, otheta))
+        home_deadline = (t_start + home_timeout_s) if home_timeout_s > 0.0 \
+            else None
+
+        # Stage 1a -- approach: drive to the origin with the same control
+        # law. The anti-stall floor (0.15 m/s min wheel speed) means the
+        # robot cannot park dead-on, so "arrived" is HOME_POS_TOL_M; the
+        # heading is aligned afterwards in stage 1b.
+        while True:
+            now = time.monotonic()
+            dt = max(now - t_prev, 1e-3)
+            t_prev = now
+
+            raw_x, raw_y, raw_theta = pose_source.read()
+            px, py, ptheta = filt.update(raw_x, raw_y, raw_theta)
+            v_left, v_right, dist, herr = compute_wheel_speeds(
+                px, py, ptheta, ox, oy, otheta)
+            link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
+            pose_source.update(v_left, v_right, dt)
+
+            if dist < HOME_POS_TOL_M:
+                break
+            if home_deadline is not None and now > home_deadline:
+                raise RuntimeError(
+                    "homing to origin timed out after %.1f s (still %.3f m "
+                    "away) -- aborting, robot coasted" % (home_timeout_s, dist))
+            if now - last_print >= 0.5:
+                last_print = now
+                print("  HOMING(approach) pose=(%+.2f,%+.2f,%+.2f)  "
+                      "dist=%.3f m" % (px, py, ptheta, dist))
+            sleep_s = CMD_PERIOD - (time.monotonic() - now)
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
+
+        # Stage 1b -- align: stop translating and pivot in place to the
+        # origin heading, so the S-curve starts facing the right way.
+        print("  HOMING(align) origin reached (%.3f m) -- pivoting to %.2f rad"
+              % (dist, otheta))
+        while True:
+            now = time.monotonic()
+            dt = max(now - t_prev, 1e-3)
+            t_prev = now
+
+            raw_x, raw_y, raw_theta = pose_source.read()
+            px, py, ptheta = filt.update(raw_x, raw_y, raw_theta)
+            herr = wrap_pi(otheta - ptheta)
+            if abs(herr) < HOME_HEADING_TOL_RAD:
+                break
+            w = K_ALPHA * herr                     # pivot: v = 0, spin only
+            v_left = -w * TRACK_WIDTH_M / 2.0
+            v_right = +w * TRACK_WIDTH_M / 2.0
+            v_left, v_right = friction_compensate(v_left, v_right,
+                                                  MIN_WHEEL_SPEED_MS)
+            v_left, v_right = clamp_wheel_speeds(v_left, v_right,
+                                                 MAX_WHEEL_SPEED_MS)
+            link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
+            pose_source.update(v_left, v_right, dt)
+
+            if home_deadline is not None and now > home_deadline:
+                raise RuntimeError(
+                    "homing (heading align) timed out after %.1f s -- "
+                    "aborting, robot coasted" % home_timeout_s)
+            if now - last_print >= 0.5:
+                last_print = now
+                print("  HOMING(align)   pose=(%+.2f,%+.2f,%+.2f)  "
+                      "herr=%+.2f rad" % (px, py, ptheta, herr))
+            sleep_s = CMD_PERIOD - (time.monotonic() - now)
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
+
+        # Brief coast to settle before the path starts.
+        for _ in range(CMD_HZ // 4):
+            link.send_command(0.0, 0.0)
+            time.sleep(CMD_PERIOD)
+        raw_x, raw_y, raw_theta = pose_source.read()
+        px, py, ptheta = filt.update(raw_x, raw_y, raw_theta)
+        print("  HOMING complete at (%.3f, %+.3f, %+.2f rad) -- origin is "
+              "(%.3f, %+.3f, %.2f rad); starting trajectory at waypoint #1"
+              % (px, py, ptheta, ox, oy, otheta))
+
+        wp_index = 1                      # origin reached: path starts at #1
+        if wp_timeout_s > 0.0:
+            wp_deadline = time.monotonic() + wp_timeout_s
+    else:
+        print("  Homing to origin waypoint #0 at (%.3f, %.3f, %.2f rad)..."
+              % waypoints[0])
+
+    # ---------------- Phase 2: waypoint following ---------------------------
     while wp_index < len(waypoints):
         now = time.monotonic()
         dt = max(now - t_prev, 1e-3)
@@ -536,9 +661,21 @@ def run_waypoint_navigation(link, waypoints, pose_source, noise_desc=""):
         # Task 10: tolerance check & iteration.
         if dist < ARRIVAL_TOLERANCE_M:
             wp_index += 1
+            if wp_timeout_s > 0.0:
+                wp_deadline = now + wp_timeout_s
             if wp_index % 25 == 0 or wp_index == len(waypoints):
                 print("  waypoint %3d/%d reached  (t=%.1f s)"
                       % (wp_index, len(waypoints), now - t_start))
+        elif wp_deadline is not None and now > wp_deadline:
+            # Missed this waypoint within the time budget: advance anyway.
+            # The residual error is NOT written back into the trajectory --
+            # the next leg is computed from wherever the robot actually is,
+            # so the miss is compensated on the way to the next waypoint.
+            print("  waypoint %3d/%d TIMEOUT after %.1f s (residual %.3f m) "
+                  "-- advancing; error rolls into next waypoint"
+                  % (wp_index + 1, len(waypoints), wp_timeout_s, dist))
+            wp_index += 1
+            wp_deadline = now + wp_timeout_s
 
         # Live status + robot telemetry (if a physical robot is listening).
         if now - last_print >= 0.5:
@@ -568,10 +705,26 @@ def run_waypoint_navigation(link, waypoints, pose_source, noise_desc=""):
     return time.monotonic() - t_start, dist
 
 
-def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003):
-    print("\n=== TEST 4: Waypoint navigation simulator (S-curve) ===")
-    print("  pose feedback: SimulatedPoseSource (no camera needed); "
-          "CameraPoseSource is a stub for the real ArUco pipeline.")
+def _apply_arena_frame_offset(waypoints):
+    """Map center-origin CSV waypoints into the camera/arena frame.
+
+    The CSV was generated centered on the arena center; the arena frame
+    (ARENA_GEOMETRY.md) has its origin at the LEFT-edge midpoint, so x shifts
+    by half the arena width. The CSV file on disk is never modified -- the
+    offset is applied to the in-memory copy only. Returns (shifted, in_bounds).
+    """
+    shifted = [(x + ARENA_FRAME_OFFSET_X_M, y, th) for x, y, th in waypoints]
+    in_bounds = all(0.0 <= x <= ARENA_WIDTH_M
+                    and -ARENA_HALF_HEIGHT_M <= y <= ARENA_HALF_HEIGHT_M
+                    for x, y, _ in shifted)
+    return shifted, in_bounds
+
+
+def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003,
+                       pose_mode="sim", frame_offset=True, wp_timeout_s=0.0,
+                       camera_index=0, debug_view=False, home_first=True,
+                       home_timeout_s=0.0):
+    print("\n=== TEST 4: Waypoint navigation (S-curve) ===")
     try:
         waypoints = load_waypoints(csv_path)
     except (OSError, ValueError) as exc:
@@ -580,15 +733,65 @@ def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003):
         return False
     print("  loaded %d waypoints from %s" % (len(waypoints), csv_path))
 
-    # Arbitrary simulated drop point away from the trajectory origin, so the
-    # homing phase (SPEC task 2) is exercised first.
-    pose_source = SimulatedPoseSource(x=0.40, y=-0.40, theta=1.0,
-                                      noise_std=noise_std)
-    print("  simulated drop point: (0.40, -0.40, 1.00 rad), noise_std=%.3f m"
-          % noise_std)
+    if frame_offset:
+        waypoints, in_bounds = _apply_arena_frame_offset(waypoints)
+        print("  arena frame offset applied: x += %.5f m (CSV center-origin "
+              "-> arena left-edge origin; file on disk unchanged)"
+              % ARENA_FRAME_OFFSET_X_M)
+        if not in_bounds:
+            print("  WARNING: some shifted waypoints fall OUTSIDE the arena "
+                  "(x 0..%.4f m, y +/-%.4f m) -- check the CSV scale"
+                  % (ARENA_WIDTH_M, ARENA_HALF_HEIGHT_M))
 
-    elapsed, final_filtered_err = run_waypoint_navigation(link, waypoints,
-                                                          pose_source)
+    pose_source = None
+    if pose_mode == "camera":
+        # Lazy import: sim mode keeps the whole suite stdlib-only.
+        try:
+            import camera_pose
+        except ImportError as exc:
+            print("  FAILED: camera mode needs opencv-contrib-python and "
+                  "numpy (%s)" % exc)
+            print("  install with: pip install opencv-contrib-python numpy")
+            return False
+        print("  pose feedback: CameraPoseSource (overhead ArUco, "
+              "DICT_4X4_50, camera index %d)" % camera_index)
+        try:
+            pose_source = camera_pose.CameraPoseSource(
+                camera_index=camera_index, debug_view=debug_view)
+        except camera_pose.CameraPoseError as exc:
+            print("  FAILED to start camera: %s" % exc)
+            return False
+    else:
+        # Arbitrary simulated drop point away from the trajectory origin, so
+        # the homing phase (SPEC task 2) is exercised first. Shifted together
+        # with the waypoints when the frame offset is applied.
+        drop_x = 0.40 + (ARENA_FRAME_OFFSET_X_M if frame_offset else 0.0)
+        pose_source = SimulatedPoseSource(x=drop_x, y=-0.40, theta=1.0,
+                                          noise_std=noise_std)
+        print("  pose feedback: SimulatedPoseSource (no camera needed)")
+        print("  simulated drop point: (%.3f, -0.40, 1.00 rad), "
+              "noise_std=%.3f m" % (drop_x, noise_std))
+
+    if wp_timeout_s > 0.0:
+        print("  per-waypoint timeout: %.1f s (missed waypoints advance "
+              "anyway; error rolls into the next waypoint)" % wp_timeout_s)
+
+    try:
+        elapsed, final_filtered_err = run_waypoint_navigation(
+            link, waypoints, pose_source, wp_timeout_s=wp_timeout_s)
+    except Exception as exc:
+        # CameraPoseError (driving blind) or anything else: stop sending and
+        # coast explicitly rather than leaving the last command running.
+        print("  NAVIGATION ABORTED: %s" % exc)
+        print("  coasting the robot")
+        for _ in range(CMD_HZ // 2):
+            link.send_command(0.0, 0.0)
+            time.sleep(CMD_PERIOD)
+        if pose_mode == "camera" and pose_source is not None:
+            pose_source.close()
+        return False
+    if pose_mode == "camera" and pose_source is not None:
+        pose_source.close()
 
     # Diagnostic: error between the simulated robot's TRUE pose and the final
     # waypoint. The arrival decisions above (and any real deployment) can only
@@ -663,7 +866,7 @@ MENU = """
 |  1  Open-loop sanity (lift wheels)                             |
 |  2  Closed-loop step response (logs CSV)                       |
 |  3  Differential maneuvers (straight + turn in place)          |
-|  4  Waypoint navigation simulator (S-curve, simulated pose)    |
+|  4  Waypoint navigation (S-curve; --pose sim|camera)           |
 |  5  Failsafe check (command loss -> coast)                     |
 |  a  Run all (0-5)                                              |
 |  q  Quit                                                       |
@@ -671,7 +874,7 @@ MENU = """
 """
 
 
-def run_test(n, link, csv_path, noise_std):
+def run_test(n, link, csv_path, noise_std, t4_opts=None):
     if n == 0:
         return test0_link_check(link)
     if n == 1:
@@ -681,13 +884,14 @@ def run_test(n, link, csv_path, noise_std):
     if n == 3:
         return test3_differential(link)
     if n == 4:
-        return test4_waypoint_nav(link, csv_path=csv_path, noise_std=noise_std)
+        return test4_waypoint_nav(link, csv_path=csv_path,
+                                  noise_std=noise_std, **(t4_opts or {}))
     if n == 5:
         return test5_failsafe(link)
     raise ValueError("unknown test number %r" % (n,))
 
 
-def interactive(link, csv_path, noise_std):
+def interactive(link, csv_path, noise_std, t4_opts=None):
     while True:
         print(MENU)
         choice = input("Select test [0-5/a/q]: ").strip().lower()
@@ -696,13 +900,13 @@ def interactive(link, csv_path, noise_std):
         if choice == "a":
             results = {}
             for n in range(6):
-                results[n] = run_test(n, link, csv_path, noise_std)
+                results[n] = run_test(n, link, csv_path, noise_std, t4_opts)
             print("\n==== SUMMARY ====")
             for n in range(6):
                 print("  Test %d: %s" % (n, "PASS" if results[n] else "FAIL"))
             break
         if choice in ("0", "1", "2", "3", "4", "5"):
-            run_test(int(choice), link, csv_path, noise_std)
+            run_test(int(choice), link, csv_path, noise_std, t4_opts)
         else:
             print("Invalid choice.")
 
@@ -719,7 +923,44 @@ def main():
     parser.add_argument("--noise", type=float, default=0.003,
                         help="simulated pose noise std-dev in meters (test 4, "
                              "0 = noiseless; default 0.003)")
+    parser.add_argument("--pose", choices=["sim", "camera"], default="sim",
+                        help="test 4 pose feedback: simulated (default, "
+                             "stdlib-only) or the overhead ArUco camera "
+                             "(needs opencv-contrib-python + numpy)")
+    parser.add_argument("--wp-timeout", type=float, default=0.0,
+                        help="test 4: per-waypoint time limit in seconds; a "
+                             "missed waypoint advances anyway and its error "
+                             "rolls into the next waypoint (0 = no limit, "
+                             "default; ~8 s recommended for camera mode)")
+    parser.add_argument("--camera-index", type=int, default=0,
+                        help="test 4 camera mode: webcam index (default 0)")
+    parser.add_argument("--debug-view", action="store_true",
+                        help="test 4 camera mode: show annotated video window")
+    parser.add_argument("--no-frame-offset", action="store_true",
+                        help="test 4: do NOT shift waypoints into the arena "
+                             "frame (default: x += %.5f m so the center-origin"
+                             " CSV matches the camera frame)"
+                        % (106.5 * 0.0254 / 2.0))
+    parser.add_argument("--no-home-first", action="store_true",
+                        help="test 4: skip the explicit homing phase "
+                             "(default: robot first drives to the trajectory "
+                             "origin from wherever it was left, aligns, then "
+                             "starts the path)")
+    parser.add_argument("--home-timeout", type=float, default=0.0,
+                        help="test 4: abort + coast if the origin is not "
+                             "reached within this many seconds (0 = no "
+                             "limit, default; ~20 s recommended for camera)")
     args = parser.parse_args()
+
+    t4_opts = {
+        "pose_mode": args.pose,
+        "frame_offset": not args.no_frame_offset,
+        "wp_timeout_s": args.wp_timeout,
+        "camera_index": args.camera_index,
+        "debug_view": args.debug_view,
+        "home_first": not args.no_home_first,
+        "home_timeout_s": args.home_timeout,
+    }
 
     ip = args.ip
     if ip is None:
@@ -730,10 +971,10 @@ def main():
     link = BotLink(ip)
     try:
         if args.test is not None:
-            ok = run_test(args.test, link, args.csv, args.noise)
+            ok = run_test(args.test, link, args.csv, args.noise, t4_opts)
             print("\nTest %d result: %s" % (args.test, "PASS" if ok else "FAIL"))
         else:
-            interactive(link, args.csv, args.noise)
+            interactive(link, args.csv, args.noise, t4_opts)
     finally:
         link.close()
 
