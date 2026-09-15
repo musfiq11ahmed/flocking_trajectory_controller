@@ -153,8 +153,9 @@ class SwarmVision:
                     bot_x = self.bot_states[marker_id]['x']
                     bot_y = self.bot_states[marker_id]['y']
                     bot_theta = self.bot_states[marker_id]['theta']
-                    
-                    current_poses[marker_id] = (bot_x, bot_y, bot_theta)
+
+                    raw_theta = self._calculate_angle_radians(marker_corners)
+                    current_poses[marker_id] = (bot_x, bot_y, bot_theta, raw_theta)
 
                     cx, cy = int(pixel_center[0]), int(pixel_center[1])
                     self._draw_text_with_outline(img, f"Bot {marker_id}", (cx - 50, cy - 35), 0.5, (0, 255, 0), 2)

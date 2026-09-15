@@ -1,7 +1,7 @@
 import csv
 import math
 import socket
-from kinematic_controller.unicycle_model import calculate_wheel_velocities
+from kinematic_controller.unicycle_model_turn_fixed import calculate_wheel_velocities
 from vision_pipeline.calibrate_and_track import SwarmVision
 
 

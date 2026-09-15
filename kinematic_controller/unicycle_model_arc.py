@@ -6,9 +6,9 @@ def calculate_wheel_velocities(curr_x, curr_y, curr_theta, targ_x, targ_y):
     
     TRACK_WIDTH = 0.074
     MAX_SPEED = 0.20
-    MIN_SPEED = 0.15
+    MIN_SPEED = 0.25
     TOLERANCE = 0.10
-    K_w = 0.4
+    K_w = 0.8
 
     # Distance check
     dist_error = math.sqrt((targ_x - curr_x)**2 + (targ_y - curr_y)**2)
@@ -33,9 +33,9 @@ def calculate_wheel_velocities(curr_x, curr_y, curr_theta, targ_x, targ_y):
     v_right = max(-MAX_SPEED, min(MAX_SPEED, v_right))
 
     # Ensure minimum speed on both wheels
-    if abs(v_left) < MIN_SPEED and abs(v_left) > 0.01:
-        v_left = math.copysign(MIN_SPEED, v_left)
-    if abs(v_right) < MIN_SPEED and abs(v_right) > 0.01:
-        v_right = math.copysign(MIN_SPEED, v_right)
+    #if abs(v_left) < MIN_SPEED and abs(v_left) > 0.01:
+        #v_left = math.copysign(MIN_SPEED, v_left)
+    #if abs(v_right) < MIN_SPEED and abs(v_right) > 0.01:
+        #v_right = math.copysign(MIN_SPEED, v_right)
 
     return v_left, v_right, False
