@@ -298,7 +298,7 @@ class CameraPoseSource(object):
         # otherwise reuse the last good H for a short dropout window.
         H_new = compute_homography(detections)
         if H_new is not None:
-            self._H, self._H_time = t_grab, H_new
+            self._H, self._H_time = H_new, t_grab   # (matrix, timestamp)!
         H = self._H if (self._H is not None
                         and t_grab - self._H_time <= self.h_max_age_s) else None
 
