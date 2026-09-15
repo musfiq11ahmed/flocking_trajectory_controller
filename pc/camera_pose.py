@@ -239,6 +239,7 @@ class CameraPoseSource(object):
         self.frames_read = 0
         self.frames_with_pose = 0
         self.last_latency_used_s = 0.0
+        self.last_detected_ids = []   # marker IDs seen on the latest frame
 
     # -- diagnostics ----------------------------------------------------------
     @property
@@ -293,6 +294,7 @@ class CameraPoseSource(object):
 
         detections = detect_markers(self._detector, cv2.cvtColor(
             frame, cv2.COLOR_BGR2GRAY))
+        self.last_detected_ids = sorted(detections.keys())
 
         # Refresh the homography whenever all four arena markers are visible;
         # otherwise reuse the last good H for a short dropout window.
@@ -307,34 +309,37 @@ class CameraPoseSource(object):
             measured = robot_pose_from_detection(detections[ROBOT_MARKER_ID], H)
             self._last_pose, self._last_pose_time = measured, t_grab
             self.frames_with_pose += 1
-
-        if measured is None:
-            if self._last_pose is not None and \
-                    t_grab - self._last_pose_time <= self.max_hold_s:
-                measured = self._last_pose     # brief occlusion: hold pose
-            elif H is None:
-                raise CameraPoseError(
-                    "arena corner markers (IDs 0-3) not all visible for "
-                    "> %.1f s -- cannot localize" % self.h_max_age_s)
-            else:
-                raise CameraPoseError(
-                    "robot marker (ID %d) not visible for > %.1f s"
-                    % (ROBOT_MARKER_ID, self.max_hold_s))
+        elif self._last_pose is not None and \
+                t_grab - self._last_pose_time <= self.max_hold_s:
+            measured = self._last_pose     # brief occlusion: hold last pose
 
         # --- latency compensation: predict from the measurement time to NOW.
         # The measurement describes the robot at exposure time; age is the
         # processing time since grab, plus the estimated capture/transfer
         # latency L. Integrate the CURRENTLY COMMANDED v/w over that window.
-        now = time.monotonic()
-        age = now - self._last_pose_time
-        dt = min(age + self.effective_latency_s(), MAX_PREDICT_S)
-        self.last_latency_used_s = dt
-        pose = predict_pose(measured[0], measured[1], measured[2],
-                            self._v_cmd, self._w_cmd, dt)
+        pose = None
+        if measured is not None:
+            now = time.monotonic()
+            age = now - self._last_pose_time
+            dt = min(age + self.effective_latency_s(), MAX_PREDICT_S)
+            self.last_latency_used_s = dt
+            pose = predict_pose(measured[0], measured[1], measured[2],
+                                self._v_cmd, self._w_cmd, dt)
 
+        # The debug view renders on EVERY frame -- including failed ones:
+        # seeing which markers are (not) found is exactly what it is for.
         if self.debug_view:
             self._show_debug(frame, detections, H, pose, measured)
-        return pose
+
+        if pose is not None:
+            return pose
+        if H is None:
+            raise CameraPoseError(
+                "arena corner markers (IDs 0-3) not all visible for "
+                "> %.1f s -- cannot localize" % self.h_max_age_s)
+        raise CameraPoseError(
+            "robot marker (ID %d) not visible for > %.1f s"
+            % (ROBOT_MARKER_ID, self.max_hold_s))
 
     def update(self, v_left_ms, v_right_ms, dt):
         """Remember the commanded wheel speeds (converted to unicycle v/w)
