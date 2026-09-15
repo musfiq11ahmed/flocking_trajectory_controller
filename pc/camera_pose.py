@@ -16,14 +16,25 @@ Arena frame (see ARENA_GEOMETRY.md -- confirmed with the user):
                     so marker orientation IS the heading (no offset)
 
 CAMERA CONFIGURATION (per project requirements):
-  * 2560x1440 with MJPEG compression -- at 2K over USB, uncompressed YUYV
-    would be limited to a few FPS; MJPEG is what makes ~30 FPS possible.
-    High, STABLE FPS beats any resolution gain.
-  * Autofocus and auto-exposure DISABLED: fixed focus (set for the ~8 ft
-    ceiling distance) and fixed exposure, so detection thresholds and frame
-    timing do not drift mid-run. Use --focus / --exposure to dial them in.
+  * Capture init mirrors the previous WORKING implementation
+    (calibrate_and_track.py) exactly: explicit CAP_DSHOW backend, MJPG
+    fourcc first, then 2560x1440, then optics -- and CAP_PROP_FPS is left
+    untouched, because an explicit fps request can make the driver
+    renegotiate a DIFFERENT (cropped-FOV) sensor mode even while reporting
+    the same resolution. MJPG at 2K is what makes ~30 FPS possible at all
+    over USB (uncompressed YUYV would manage only a few FPS).
+  * Autofocus and auto-exposure DISABLED: focus locked to 0 (ceiling
+    distance) as in the working version (--focus overrides), exposure
+    manual (--exposure sets the value), so detection thresholds and frame
+    timing do not drift mid-run.
+  * Detection pipeline also restored from the working version: blur- and
+    small-marker-forgiving DetectorParameters + CLAHE contrast
+    equalization before detection.
   * The driver buffer is flushed on every read so we always process the
     FRESHEST frame, not a queued older one.
+  * The DEBUG WINDOW is displayed scaled to 1280x720 (like the working
+    version): showing a raw 2560x1440 window on a smaller screen makes you
+    see only one corner of the feed. Detection always runs on full 2K.
 
 LATENCY COMPENSATION (critical -- read before tuning):
   A camera pose is a DELAYED measurement: by the time a frame is exposed,
@@ -185,49 +196,81 @@ class CameraPoseSource(object):
         self.latency_frames = latency_frames
         self.track_m = track_m
 
-        self._cap = cv2.VideoCapture(camera_index)
+        # Capture backend + init order EXACTLY as the previous working
+        # implementation (calibrate_and_track.py): explicit DirectShow, MJPG
+        # first, then 2560x1440, then optics. A different backend or property
+        # order can make the UVC driver negotiate a DIFFERENT (cropped-FOV)
+        # sensor mode even while reporting the same resolution.
+        self._used_dshow = True
+        self._cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        if not self._cap.isOpened():
+            print("[camera] CAP_DSHOW failed, retrying default backend")
+            self._used_dshow = False
+            self._cap = cv2.VideoCapture(camera_index)
         if not self._cap.isOpened():
             raise CameraPoseError(
                 "cannot open camera index %d -- check the webcam connection "
                 "and that no other app is using it" % camera_index)
 
-        # --- fixed capture pipeline: MJPEG @ requested fps/resolution ------
-        # MJPEG must be set BEFORE width/height on many UVC drivers, or the
-        # mode switch is rejected and you silently fall back to slow YUYV.
         if mjpeg:
             self._cap.set(cv2.CAP_PROP_FOURCC,
                           cv2.VideoWriter_fourcc("M", "J", "P", "G"))
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self._cap.set(cv2.CAP_PROP_FPS, fps)
+        # NOTE: CAP_PROP_FPS is deliberately NOT set -- on DirectShow an
+        # explicit fps request can make the driver renegotiate a different
+        # (possibly cropped) media type. The working version never set it;
+        # MJPG 2K runs at its native ~30 fps regardless, and measured_fps
+        # reports the true capture rate online.
         # Shrink the driver buffer so read() returns a FRESH frame, not one
         # queued several hundred ms ago (stale pose = wrong corrections).
         self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        # --- fixed optics: autofocus OFF, auto-exposure OFF -----------------
-        # 0.25 = manual exposure mode on V4L2 (Linux); on DirectShow/Windows
-        # manual is 0 -- if exposure still floats there, pass this value 0.
+        # --- fixed optics (same as the working version) ---------------------
         self._cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-        self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
-        if focus is not None:
-            # Device-specific scale (often 0-255): sweep it in preview mode
-            # and pick the sharpest value for the ~8 ft ceiling distance.
-            self._cap.set(cv2.CAP_PROP_FOCUS, focus)
+        # Old working code locked focus to 0 (far/ceiling distance); --focus
+        # overrides if a sweep shows a sharper value.
+        self._cap.set(cv2.CAP_PROP_FOCUS, 0 if focus is None else focus)
+        # auto-exposure OFF: manual is 0 on DirectShow, 0.25 on V4L2/Linux.
+        self._cap.set(cv2.CAP_PROP_AUTO_EXPOSURE,
+                      0 if self._used_dshow else 0.25)
         if exposure is not None:
-            # Device-specific (V4L2: absolute; DirectShow: log2 seconds,
-            # e.g. -6 ~= 1/64 s). Fix it so frame timing stays constant.
+            # Device-specific (DirectShow: log2 seconds, e.g. -6 = 1/64 s;
+            # V4L2: absolute). Fix it so frame timing stays constant.
             self._cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
+
+        # Optional explicit fps request -- OFF by default (see NOTE above).
+        if fps > 0:
+            self._cap.set(cv2.CAP_PROP_FPS, fps)
 
         # Report what the driver actually accepted.
         actual_w = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         actual_fps = self._cap.get(cv2.CAP_PROP_FPS)
-        print("[camera] requested %dx%d@%d MJPG -> got %dx%d@%.0f"
-              % (width, height, fps, actual_w, actual_h, actual_fps))
+        print("[camera] %s MJPG %dx%d -> got %dx%d@%.0f"
+              % ("DSHOW" if self._used_dshow else "default-backend",
+                 width, height, actual_w, actual_h, actual_fps))
 
         dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICT_ID)
-        self._detector = cv2.aruco.ArucoDetector(
-            dictionary, cv2.aruco.DetectorParameters())
+        # Detector tuning from the previous working version: forgiving shape
+        # approximation fights motion blur at low FPS, small min perimeter
+        # finds 8-9 cm markers from 8 ft away, SUBPIX refinement keeps the
+        # homography stable.
+        params = cv2.aruco.DetectorParameters()
+        params.polygonalApproxAccuracyRate = 0.05
+        params.minMarkerPerimeterRate = 0.015
+        params.adaptiveThreshConstant = 10
+        params.adaptiveThreshWinSizeMin = 3
+        params.adaptiveThreshWinSizeMax = 23
+        params.adaptiveThreshWinSizeStep = 10
+        params.minCornerDistanceRate = 0.05
+        params.errorCorrectionRate = 1.0
+        params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self._detector = cv2.aruco.ArucoDetector(dictionary, params)
+        # CLAHE contrast equalization (also from the working version):
+        # big detection-reliability win under uneven arena lighting.
+        self._clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        self.use_clahe = use_clahe
 
         self._H = None              # last good pixel->arena homography
         self._H_time = 0.0
@@ -398,9 +441,20 @@ class CameraPoseSource(object):
                 cv2.putText(vis, text, (10, 40 + 35 * i),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         elif H is None:
-            cv2.putText(vis, "NO HOMOGRAPHY (need markers 0-3)", (10, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-        cv2.imshow("camera_pose debug", vis)
+            cv2.putText(vis, "NO HOMOGRAPHY (need markers 0-3), seen: %s"
+                        % self.last_detected_ids, (10, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        else:
+            cv2.putText(vis, "ROBOT MARKER (id 4) NOT VISIBLE, seen: %s"
+                        % self.last_detected_ids, (10, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+        # Scale the 2K frame down for display, exactly like the previous
+        # working version did: an unscaled 2560x1440 window is LARGER than
+        # most screens, so you only see one corner of the feed (and it looks
+        # like the camera does not cover the arena). Detection still runs on
+        # the full 2K frame.
+        display = cv2.resize(vis, (1280, 720))
+        cv2.imshow("camera_pose debug", display)
         cv2.waitKey(1)
 
 
@@ -417,11 +471,17 @@ def main():
                         help="occlusion hold time in s (default %(default)s)")
     parser.add_argument("--width", type=int, default=CAMERA_WIDTH)
     parser.add_argument("--height", type=int, default=CAMERA_HEIGHT)
-    parser.add_argument("--fps", type=int, default=CAMERA_FPS,
-                        help="requested capture rate (default %(default)s)")
+    parser.add_argument("--fps", type=int, default=0,
+                        help="explicitly request this capture rate (default "
+                             "0 = do NOT touch it, like the previous working "
+                             "version; an explicit request can make the "
+                             "driver renegotiate a cropped sensor mode)")
     parser.add_argument("--no-mjpeg", action="store_true",
                         help="do not force MJPEG (NOT recommended at 2K: "
                              "uncompressed USB bandwidth limits FPS heavily)")
+    parser.add_argument("--no-clahe", action="store_true",
+                        help="disable CLAHE contrast equalization "
+                             "(enabled by default, as in the working version)")
     parser.add_argument("--focus", type=float, default=None,
                         help="manual focus value (device scale, often 0-255; "
                              "autofocus is always disabled)")
@@ -440,7 +500,8 @@ def main():
                            width=args.width, height=args.height,
                            fps=args.fps, mjpeg=not args.no_mjpeg,
                            focus=args.focus, exposure=args.exposure,
-                           latency_s=args.latency_s)
+                           latency_s=args.latency_s,
+                           use_clahe=not args.no_clahe)
     print("camera opened; printing pose at 5 Hz (Ctrl-C to quit)")
     try:
         while True:
