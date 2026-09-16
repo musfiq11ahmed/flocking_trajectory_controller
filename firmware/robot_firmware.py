@@ -147,6 +147,19 @@ PIN_ENC_L_A = 1   # GPIO 1  <- left encoder  phase A
 PIN_ENC_L_B = 2   # GPIO 2  <- left encoder  phase B
 PIN_ENC_R_A = 9   # GPIO 9  <- right encoder phase A
 PIN_ENC_R_B = 10  # GPIO 10 <- right encoder phase B
+
+# --- Direction correction (v5) ----------------------------------------------
+# If a wheel spins physically BACKWARD for a positive duty (motor leads
+# swapped at the DRV8833), set that side's MOTOR_INVERT to True.
+# If a wheel spins forward but its ticks DECREASE (encoder A/B swapped),
+# set that side's ENCODER_INVERT to True.
+# Goal convention: positive RPM command -> wheel spins robot-forward AND
+# ticks increase. Diagnose with the REPL snippet in README/RUNBOOK.
+MOTOR_INVERT_L = True    # v5: integrity check found +duty -> -ticks on left;
+                         # left motor leads are swapped relative to right.
+MOTOR_INVERT_R = False   # right chain verified correct
+ENCODER_INVERT_L = False
+ENCODER_INVERT_R = False
 # Forbidden pins 0, 3, 43, 44, 46 are intentionally not referenced anywhere.
 
 # --- UDP packet layouts (byte-identical to pc/udp_protocol.py) ---------------
@@ -162,6 +175,7 @@ shared = {
     "target_l": 0.0,        # target RPM, written by network thread
     "target_r": 0.0,
     "last_cmd_ms": 0,       # ticks_ms() of last valid command
+    "remote": None,         # (ip, port) of last command sender; telemetry target
     "ticks_l": 0,           # encoder totals, written by IRQ handlers
     "ticks_r": 0,
     "meas_l": 0.0,          # measured RPM, written by PID loop
@@ -179,6 +193,10 @@ diag = {
 
 # v3: WLAN handle kept globally so the [NET] report can print live RSSI.
 _wlan = None
+
+# v4: UDP socket created in main() and shared: the network thread only
+# receives, the PID loop sends telemetry on its precise 50 ms cadence.
+_sock = None
 
 
 def _to_int32(v):
@@ -200,12 +218,15 @@ class Motor:
     duty = 0 : both pins at duty 0 -> coast/stop
     """
 
-    def __init__(self, pin_fwd, pin_rev):
+    def __init__(self, pin_fwd, pin_rev, invert=False):
+        self._invert = invert
         self.pwm_fwd = PWM(Pin(pin_fwd, Pin.OUT), freq=PWM_FREQ_HZ, duty_u16=0)
         self.pwm_rev = PWM(Pin(pin_rev, Pin.OUT), freq=PWM_FREQ_HZ, duty_u16=0)
 
     def set(self, duty):
         duty = _clamp(duty, -1.0, 1.0)
+        if self._invert:
+            duty = -duty
         d = int(abs(duty) * 65535 + 0.5)
         if duty > 0.0:
             self.pwm_fwd.duty_u16(d)
@@ -233,9 +254,10 @@ class Encoder:
     wiring (or the two GPIO numbers) for that side.
     """
 
-    def __init__(self, pin_a, pin_b, count_key):
+    def __init__(self, pin_a, pin_b, count_key, invert=False):
         self._phase_b = Pin(pin_b, Pin.IN)
         self._key = count_key
+        self._step = -1 if invert else 1
         # v2 fix: keep a reference to the Phase A pin. The IRQ registration
         # lives on the Pin object; in v1 it was a local that went out of
         # scope as soon as __init__ returned.
@@ -245,17 +267,17 @@ class Encoder:
 
     def _on_a_rising(self, pin):
         if self._phase_b.value():
-            shared[self._key] -= 1
+            shared[self._key] -= self._step
         else:
-            shared[self._key] += 1
+            shared[self._key] += self._step
 
 
 # Hardware objects exist at module level so the try/finally in main() can
 # always coast the motors even if boot fails partway through.
-motor_left = Motor(PIN_L_FWD, PIN_L_REV)
-motor_right = Motor(PIN_R_FWD, PIN_R_REV)
-enc_left = Encoder(PIN_ENC_L_A, PIN_ENC_L_B, "ticks_l")
-enc_right = Encoder(PIN_ENC_R_A, PIN_ENC_R_B, "ticks_r")
+motor_left = Motor(PIN_L_FWD, PIN_L_REV, invert=MOTOR_INVERT_L)
+motor_right = Motor(PIN_R_FWD, PIN_R_REV, invert=MOTOR_INVERT_R)
+enc_left = Encoder(PIN_ENC_L_A, PIN_ENC_L_B, "ticks_l", invert=ENCODER_INVERT_L)
+enc_right = Encoder(PIN_ENC_R_A, PIN_ENC_R_B, "ticks_r", invert=ENCODER_INVERT_R)
 
 
 # ------------------------------- WiFi ----------------------------------------
@@ -304,31 +326,22 @@ def wifi_connect():
 
 # ------------------------ Network thread (Core 0 role) -----------------------
 def network_thread():
-    """UDP command listener + 20 Hz telemetry streamer (v2: with diagnostics).
+    """UDP command listener (RX only, v4).
 
-    Mirrors the Arduino core-0 networkTask: blocking-ish receive with a short
-    timeout (so telemetry keeps its cadence on the same thread), parse 8-byte
-    '<ff' commands, remember the sender, stream 24-byte '<ffiiff' telemetry
-    back to it every TELEMETRY_PERIOD_MS.
+    v4 restructure: this thread does NOTHING but blocking receive. Telemetry
+    moved into the PID loop, which owns a precise 50 ms cadence -- previously
+    every recvfrom timeout here directly delayed telemetry, capping the link
+    at ~13 Hz. Blocking recv releases the GIL, so the PID loop runs freely;
+    incoming commands are handled the instant lwIP delivers them.
 
-    v2: counts valid/invalid datagrams and prints a status line every
-    NET_REPORT_PERIOD_MS so you can tell "no packets arriving" apart from
-    "packets arriving but all zero". Any crash is printed as [NET FAULT]
-    instead of killing the thread silently.
+    Counts valid/invalid datagrams and prints a status line every
+    NET_REPORT_PERIOD_MS. Any crash is printed as [NET FAULT] instead of
+    killing the thread silently.
     """
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            # Lets us re-run main.py (or rebind after a crash) without a
-            # soft reset, instead of dying with EADDRINUSE.
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except (OSError, AttributeError):
-            pass                 # port without SO_REUSEADDR: harmless
-        s.bind(("0.0.0.0", UDP_PORT))
-        s.settimeout(0.005)
+        s = _sock
+        s.settimeout(0.25)     # wake 4x/s for the report even with no traffic
 
-        remote = None
-        last_telemetry = time.ticks_ms()
         last_report = time.ticks_ms()
         print("[NET ] listening on 0.0.0.0:%d -- waiting for first command"
               % UDP_PORT)
@@ -358,13 +371,13 @@ def network_thread():
                         shared["target_l"] = _clamp(left, -MAX_RPM, MAX_RPM)
                         shared["target_r"] = _clamp(right, -MAX_RPM, MAX_RPM)
                         shared["last_cmd_ms"] = time.ticks_ms()
-                        if remote is None:
+                        if shared["remote"] is None:
                             # Raw bytes included: kills "format mismatch?"
                             # guesswork in one look.
                             print("[NET ] first command from %s:%d raw=%s "
                                   "-> tgt=(%s, %s) RPM"
                                   % (addr[0], addr[1], data, left, right))
-                        remote = addr  # telemetry goes to last command sender
+                        shared["remote"] = addr  # telemetry -> last sender
                         diag["rx_ok"] += 1
                 else:
                     diag["rx_bad"] += 1   # wrong size -> PC format mismatch
@@ -373,29 +386,11 @@ def network_thread():
                               "-- PC must send exactly 8 bytes '<ff'"
                               % (len(data), data))
 
-            # --- telemetry @ 20 Hz --------------------------------------------
-            now = time.ticks_ms()
-            if remote is not None and \
-                    time.ticks_diff(now, last_telemetry) >= TELEMETRY_PERIOD_MS:
-                last_telemetry = now
-                pkt = struct.pack(
-                    TELEMETRY_FORMAT,
-                    shared["meas_l"],
-                    shared["meas_r"],
-                    _to_int32(shared["ticks_l"]),
-                    _to_int32(shared["ticks_r"]),
-                    shared["duty_l"],
-                    shared["duty_r"],
-                )
-                try:
-                    s.sendto(pkt, remote)
-                    diag["tx"] += 1
-                except OSError:
-                    pass             # WiFi hiccup: drop one frame, keep going
-
             # --- diagnostics @ 0.5 Hz ------------------------------------------
+            now = time.ticks_ms()
             if time.ticks_diff(now, last_report) >= NET_REPORT_PERIOD_MS:
                 last_report = now
+                remote = shared["remote"]
                 rssi = "n/a"
                 if _wlan is not None:
                     try:
@@ -433,6 +428,7 @@ def pid_loop():
 
     period_us = PID_PERIOD_MS * 1000
     next_tick = time.ticks_add(time.ticks_us(), period_us)
+    last_telemetry = time.ticks_ms()
 
     while True:
         # --- failsafe: no valid command for >500 ms -> zero targets ---------
@@ -504,20 +500,65 @@ def pid_loop():
         shared["meas_l"] = rpm_l
         shared["meas_r"] = rpm_r
 
+        # --- telemetry @ PID cadence (v4) -------------------------------------
+        # Sent from here, not the network thread: this loop owns the precise
+        # 50 ms schedule, so telemetry rate no longer depends on RX timeouts.
+        remote = shared["remote"]
+        if remote is not None and \
+                time.ticks_diff(time.ticks_ms(), last_telemetry) >= \
+                TELEMETRY_PERIOD_MS:
+            last_telemetry = time.ticks_ms()
+            pkt = struct.pack(
+                TELEMETRY_FORMAT,
+                rpm_l,
+                rpm_r,
+                _to_int32(shared["ticks_l"]),
+                _to_int32(shared["ticks_r"]),
+                shared["duty_l"],
+                shared["duty_r"],
+            )
+            try:
+                _sock.sendto(pkt, remote)
+                diag["tx"] += 1
+            except OSError:
+                pass             # WiFi hiccup: drop one frame, keep going
+
         # --- drift-free 50 ms schedule ---------------------------------------
+        # time.sleep_us() on the ESP32 port is a BUSY-WAIT that never releases
+        # the GIL: spinning ~50 ms per cycle here starved the network thread
+        # and collapsed the 20 Hz UDP link to ~3 Hz. Sleep the bulk of the
+        # period with sleep_ms (vTaskDelay -> releases the GIL so the network
+        # thread runs), then spin only the last few ms for deadline precision.
         remaining = time.ticks_diff(next_tick, time.ticks_us())
-        if remaining > 0:
-            time.sleep_us(remaining)
+        if remaining > 4000:
+            time.sleep_ms((remaining - 3000) // 1000)
+        while time.ticks_diff(next_tick, time.ticks_us()) > 0:
+            pass
         next_tick = time.ticks_add(next_tick, period_us)
 
 
 # --------------------------------- Boot --------------------------------------
 def main():
-    print("=== ESP32-S3 diff-drive bot firmware v2 (diagnostics build) ===")
+    print("=== ESP32-S3 diff-drive bot firmware v5 (direction invert flags) ===")
+    print("[CFG ] MOTOR_INVERT L=%s R=%s  ENCODER_INVERT L=%s R=%s"
+          % (MOTOR_INVERT_L, MOTOR_INVERT_R,
+             ENCODER_INVERT_L, ENCODER_INVERT_R))
     motor_left.coast()       # start coasted, whatever the reset state was
     motor_right.coast()
-    global _wlan
+    global _wlan, _sock
     _wlan = wifi_connect()
+
+    # One shared UDP socket: network thread receives, PID loop sends
+    # telemetry. (lwIP UDP sockets tolerate concurrent recv/send.)
+    _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        # Lets us re-run main.py (or rebind after a crash) without a
+        # soft reset, instead of dying with EADDRINUSE.
+        _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    except (OSError, AttributeError):
+        pass                     # port without SO_REUSEADDR: harmless
+    _sock.bind(("0.0.0.0", UDP_PORT))
+
     shared["last_cmd_ms"] = time.ticks_ms()
 
     _thread.stack_size(8 * 1024)   # network thread stack (bytes)
