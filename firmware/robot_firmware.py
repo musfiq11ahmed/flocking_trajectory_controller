@@ -174,7 +174,11 @@ shared = {
 diag = {
     "rx_ok": 0,             # valid 8-byte command packets received
     "rx_bad": 0,            # datagrams with the wrong size (format mismatch)
+    "tx": 0,                # telemetry packets actually sent
 }
+
+# v3: WLAN handle kept globally so the [NET] report can print live RSSI.
+_wlan = None
 
 
 def _to_int32(v):
@@ -259,6 +263,22 @@ def wifi_connect():
     """Station-mode connect with timeout + retry; prints the IP on success."""
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    # Disable WiFi modem sleep. The default power-save mode lets the radio
+    # doze between beacons, so outgoing UDP telemetry gets queued and
+    # delivered in bursts (observed: 20 Hz stream arriving at ~2 Hz with
+    # 400-900 ms gaps). PM_NONE keeps the radio awake: full telemetry rate,
+    # low latency. Slightly higher power draw -- irrelevant on a robot.
+    try:
+        wlan.config(pm=wlan.PM_NONE)
+        print("[WiFi] power-save disabled (pm=PM_NONE)")
+    except (ValueError, AttributeError):
+        # Older MicroPython builds lack PM_NONE; PM_PERFORMANCE (min-modem
+        # sleep) is the next best.
+        try:
+            wlan.config(pm=wlan.PM_PERFORMANCE)
+            print("[WiFi] pm=PM_PERFORMANCE (PM_NONE unsupported)")
+        except (ValueError, AttributeError):
+            print("[WiFi] WARNING: cannot set pm -- expect telemetry jitter")
     attempt = 0
     while True:
         attempt += 1
@@ -273,6 +293,11 @@ def wifi_connect():
         else:
             break
     print("[WiFi] connected, IP =", wlan.ifconfig()[0])
+    try:
+        print("[WiFi] RSSI = %d dBm  (good: > -65, ok: -65..-75, bad: < -75)"
+              % wlan.status("rssi"))
+    except (OSError, ValueError):
+        pass
     print("[UDP ] listening on port", UDP_PORT)
     return wlan
 
@@ -364,15 +389,22 @@ def network_thread():
                 )
                 try:
                     s.sendto(pkt, remote)
+                    diag["tx"] += 1
                 except OSError:
                     pass             # WiFi hiccup: drop one frame, keep going
 
             # --- diagnostics @ 0.5 Hz ------------------------------------------
             if time.ticks_diff(now, last_report) >= NET_REPORT_PERIOD_MS:
                 last_report = now
-                print("[NET ] rx_ok=%d rx_bad=%d tgt=(%.1f, %.1f) "
+                rssi = "n/a"
+                if _wlan is not None:
+                    try:
+                        rssi = "%ddBm" % _wlan.status("rssi")
+                    except (OSError, ValueError):
+                        pass
+                print("[NET ] rx_ok=%d rx_bad=%d tx=%d rssi=%s tgt=(%.1f, %.1f) "
                       "duty=(%.2f, %.2f) remote=%s"
-                      % (diag["rx_ok"], diag["rx_bad"],
+                      % (diag["rx_ok"], diag["rx_bad"], diag["tx"], rssi,
                          shared["target_l"], shared["target_r"],
                          shared["duty_l"], shared["duty_r"],
                          "%s:%d" % (remote[0], remote[1])
@@ -484,7 +516,8 @@ def main():
     print("=== ESP32-S3 diff-drive bot firmware v2 (diagnostics build) ===")
     motor_left.coast()       # start coasted, whatever the reset state was
     motor_right.coast()
-    wifi_connect()
+    global _wlan
+    _wlan = wifi_connect()
     shared["last_cmd_ms"] = time.ticks_ms()
 
     _thread.stack_size(8 * 1024)   # network thread stack (bytes)

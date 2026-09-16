@@ -65,8 +65,8 @@ Over WiFi (no cable; temporarily swap firmware):
 ```bash
 mpremote connect COM13 fs cp firmware/motor_test_esp32.py :main.py
 mpremote connect COM13 reset
-python3 pc/motor_test_pc.py --discover
-python3 pc/motor_test_pc.py --ip 192.168.x.x
+python pc/motor_test_pc.py --discover
+python pc/motor_test_pc.py --ip 192.168.x.x
 # when done, restore the PID firmware:
 mpremote connect COM13 fs cp firmware/robot_firmware.py :main.py
 mpremote connect COM13 reset
@@ -77,11 +77,11 @@ PASS = RPM rises clearly with duty (≈40 RPM @ 0.40 → 100+ @ 1.00).
 
 ### B2. WiFi control-loop tests (PID firmware running)
 ```bash
-python3 pc/test_suite.py --test 0 --ip 192.168.x.x   # link check
-python3 pc/test_suite.py --test 1 --ip 192.168.x.x   # open-loop sanity
-python3 pc/test_suite.py --test 2 --ip 192.168.x.x   # step response (logs CSV)
-python3 pc/test_suite.py --test 3 --ip 192.168.x.x   # straight + turn
-python3 pc/test_suite.py --test 5 --ip 192.168.x.x   # failsafe (IMPORTANT)
+python pc/test_suite.py --test 0 --ip 192.168.x.x   # link check
+python pc/test_suite.py --test 1 --ip 192.168.x.x   # open-loop sanity
+python pc/test_suite.py --test 2 --ip 192.168.x.x   # step response (logs CSV)
+python pc/test_suite.py --test 3 --ip 192.168.x.x   # straight + turn
+python pc/test_suite.py --test 5 --ip 192.168.x.x   # failsafe (IMPORTANT)
 ```
 Do NOT drive untethered until Test 5 passes (500 ms command-loss → coast).
 
@@ -107,7 +107,7 @@ stable mount and constant lighting are still essential.
 
 ### C3. Validate the vision pipeline (no robot needed)
 ```bash
-python3 pc/camera_pose.py --index 0 --debug-view
+python pc/camera_pose.py --index 0 --debug-view
 ```
 (If you have a built-in webcam, try `--index 1`.)
 - Check the startup line: it should report `got 2560x1440@30` (MJPEG).
@@ -116,7 +116,7 @@ python3 pc/camera_pose.py --index 0 --debug-view
   y −0.864 → +0.864 m bottom-to-top; rotate it and watch theta.
 - Watch `fps=` (should be high and STABLE) and `track=` (~100 %).
 - Lock in focus/exposure for the 8 ft distance (fixed thereafter):
-  `python3 pc/camera_pose.py --index 0 --debug-view --focus 40 --exposure -6`
+  `python pc/camera_pose.py --index 0 --debug-view --focus 40 --exposure -6`
   (sweep --focus until markers are sharpest; note both values for step D2)
 - Note the `lat=` latency estimate; if you later see systematic overshoot
   along the travel direction, set it explicitly with `--latency-s`.
@@ -127,7 +127,7 @@ python3 pc/camera_pose.py --index 0 --debug-view
 
 ### D1. (Optional) Dry-run in simulation first
 ```bash
-python3 pc/test_suite.py --test 4 --ip 192.168.x.x
+python pc/test_suite.py --test 4 --ip 192.168.x.x
 ```
 (`--pose sim` is the default; a connected robot follows simulated commands —
 lift the wheels if you don't want it driving yet.)
@@ -138,7 +138,7 @@ lift the wheels if you don't want it driving yet.)
 2. PC and robot on the same 2.4 GHz network; webcam plugged in.
 3. Run (add the --focus/--exposure/--latency-s values you tuned in C3):
 ```bash
-python3 pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
+python pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
     --wp-timeout 8 --home-timeout 20 --focus 40 --debug-view
 ```
 
@@ -162,9 +162,9 @@ within 500 ms of command loss; camera loss also aborts + coasts).
 ```bash
 # 1. power the robot (robot_firmware.py auto-runs), put it anywhere in the arena
 # 2. check vision (optional):
-python3 pc/camera_pose.py --index 0 --debug-view
+python pc/camera_pose.py --index 0 --debug-view
 # 3. run:
-python3 pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
+python pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
     --wp-timeout 8 --home-timeout 20 --debug-view
 ```
 
