@@ -34,11 +34,14 @@ import udp_protocol as proto
 CMD_HZ = 20                    # command/telemetry rate (matches firmware)
 CMD_PERIOD = 1.0 / CMD_HZ
 
-WHEEL_RADIUS_M = 0.03          # N20 wheel radius (default, configurable)
-TRACK_WIDTH_M = 0.12           # wheel-to-wheel distance (default, configurable)
+WHEEL_RADIUS_M = 0.021         # 42 mm diameter wheel (measured spec)
+TRACK_WIDTH_M = 0.12           # wheel-to-wheel distance -- MEASURE YOURS
 
-MIN_WHEEL_SPEED_MS = 0.15      # friction compensation floor (anti-stall)
-MAX_WHEEL_SPEED_MS = 0.30      # absolute wheel-speed clamp (anti-skid)
+MIN_WHEEL_SPEED_MS = 0.06      # anti-stall floor = ~27 RPM (sustained-motion
+                               # floor measured at 0.40 duty on this drivetrain)
+MAX_WHEEL_SPEED_MS = 0.10      # ~45 RPM = ~74% of the measured 61 RPM maximum.
+                               # Drivetrain physics: 61 RPM x pi x 0.042 m / 60
+                               # = 0.134 m/s absolute ceiling -- never exceed.
 ARRIVAL_TOLERANCE_M = 0.10     # waypoint arrival tolerance
 
 K_RHO = 2.0                    # unicycle gain: v   = K_RHO   * distance
@@ -244,10 +247,21 @@ def test1_open_loop(link):
 # ---------------------------------------------------------------------------
 # Test 2 - Closed-loop step response
 # ---------------------------------------------------------------------------
-def test2_step_response(link, target_rpm=60.0, duration_s=4.0):
+def test2_step_response(link, target_rpm=30.0, duration_s=4.0):
+    # NOTE: target is 30 RPM, not 60 -- the drivetrain maxes out at ~61 RPM
+    # (measured, 0.90 duty), so a 60 RPM step demands ~97% actuator effort
+    # with zero headroom and cannot settle quickly on ANY controller.
+    # 30 RPM (~50% of capability) is the meaningful closed-loop test.
+    #
+    # NOTE: run ON THE GROUND, not lifted. A lifted wheel has ~zero inertia
+    # and no rolling friction: one 50 ms control cycle of launch duty throws
+    # it to ~45 RPM, and with nothing to brake the overshoot it freewheels
+    # for seconds. That is not the operating condition -- on the floor,
+    # rolling friction brakes overshoot naturally and the loop settles fast.
     print("\n=== TEST 2: Closed-loop step response (0 -> %.0f RPM both wheels) ==="
           % target_rpm)
-    input(">> LIFT THE ROBOT so both wheels spin freely, then press Enter...")
+    input(">> Place the robot ON THE FLOOR with ~0.5 m clear ahead, "
+          "then press Enter...")
     link.drain()
     telem = []
     run_phase(link, target_rpm, target_rpm, duration_s, telem)

@@ -161,10 +161,12 @@ PIN_ENC_R_B = 10  # GPIO 10 <- right encoder phase B
 # set that side's ENCODER_INVERT to True.
 # Goal convention: positive RPM command -> wheel spins robot-forward AND
 # ticks increase. Diagnose with the REPL snippet in README/RUNBOOK.
-MOTOR_INVERT_L = True    # v5: integrity check found +duty -> -ticks on left;
-                         # left motor leads are swapped relative to right.
-MOTOR_INVERT_R = False   # right chain verified correct
-ENCODER_INVERT_L = False
+MOTOR_INVERT_L = False   # v7: motor wiring is FINE. v5 guessed motor polarity
+                         # but the bot spun in place under "both forward" --
+                         # proving the left motor turns forward for +duty and
+                         # it is the ENCODER that reads inverted.
+MOTOR_INVERT_R = False
+ENCODER_INVERT_L = True  # left encoder counts backwards relative to motion
 ENCODER_INVERT_R = False
 # Forbidden pins 0, 3, 43, 44, 46 are intentionally not referenced anywhere.
 
@@ -545,7 +547,7 @@ def pid_loop():
 
 # --------------------------------- Boot --------------------------------------
 def main():
-    print("=== ESP32-S3 diff-drive bot firmware v6 (PID + feedforward) ===")
+    print("=== ESP32-S3 diff-drive bot firmware v7 (encoder-invert fix) ===")
     print("[CFG ] MOTOR_INVERT L=%s R=%s  ENCODER_INVERT L=%s R=%s"
           % (MOTOR_INVERT_L, MOTOR_INVERT_R,
              ENCODER_INVERT_L, ENCODER_INVERT_R))
