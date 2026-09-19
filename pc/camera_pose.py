@@ -97,7 +97,7 @@ ARUCO_DICT_ID = cv2.aruco.DICT_4X4_50    # verified against the printed markers
 CAMERA_WIDTH = 2560                       # 2K mode, MJPEG (see header notes)
 CAMERA_HEIGHT = 1440
 CAMERA_FPS = 30                           # requested capture rate
-TRACK_WIDTH_M = 0.12                      # wheel-to-wheel distance (unicycle)
+TRACK_WIDTH_M = 0.08                      # wheel center-to-center (measured)
 
 DEFAULT_MAX_HOLD_S = 0.5    # robot-marker occlusion tolerated before error
 DEFAULT_H_MAX_AGE_S = 2.0   # corner-marker dropout tolerated on last-good H

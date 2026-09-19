@@ -129,6 +129,16 @@ PID_KFF = 0.0148                  # v6: feedforward, duty per RPM of TARGET.
                                   # PI only trims the residual; cuts the 2-3 s
                                   # stiction wind-up delay in step response.
 PID_INTEGRAL_LIMIT = 1.0          # anti-windup clamp on the integral term
+PID_LAUNCH_P_CAP = 0.20           # v9: cap the P term while |err| > ERR_FAR so
+                                  # a step cannot saturate the output for a
+                                  # cycle (one 0.98-duty cycle = +13 RPM spike)
+PID_ERR_FAR_RPM = 5.0             # "far from target" threshold for the P cap
+PID_STALL_OUT_CAP = 0.65          # v9: while stalled, output is capped just
+                                  # above the ~0.5-0.6 breakaway threshold --
+                                  # enough to start the wheel, never enough
+                                  # for the 0.98-duty launch spike
+PID_FF_HOLD_RPM = 2.0             # (removed in v10 -- conditional FF caused
+                                  # limit-cycle oscillation; kept for reference)
 
 # --- PWM (machine.PWM) -------------------------------------------------------
 PWM_FREQ_HZ = 20000               # 20 kHz = ultrasonic, fast-decay IN/IN
@@ -479,23 +489,66 @@ def pid_loop():
             err_l = tgt_l - rpm_l
             err_r = tgt_r - rpm_r
 
-            integ_l += PID_KI * err_l * dt
-            integ_r += PID_KI * err_r * dt
+            # v9 anti-windup, part 0: STALL GUARD. This drivetrain needs ~0.5
+            # duty to break static friction; while the wheel is stuck, the
+            # error stays large and a full-rate integrator would charge to
+            # the clamp, then the wheel lurches forward on breakaway.
+            d_i_l = PID_KI * err_l * dt
+            d_i_r = PID_KI * err_r * dt
+            stalled_l = abs(rpm_l) < 2.0 and abs(tgt_l) > 2.0
+            stalled_r = abs(rpm_r) < 2.0 and abs(tgt_r) > 2.0
+            # v9: stalled wheels integrate at 1/4 rate -- enough to guarantee
+            # breakaway even at low targets (where FF+P sits just under the
+            # stiction threshold), slow enough to prevent the lurch windup.
+            if stalled_l:
+                d_i_l *= 0.25
+            if stalled_r:
+                d_i_r *= 0.25
+            integ_l += d_i_l
+            integ_r += d_i_r
             # Anti-windup, part 1: clamp the integral term itself...
             integ_l = _clamp(integ_l, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT)
             integ_r = _clamp(integ_r, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT)
 
-            out_l = PID_KP * err_l + integ_l + PID_KFF * tgt_l
-            out_r = PID_KP * err_r + integ_r + PID_KFF * tgt_r
+            # v10: FEEDFORWARD IS ALWAYS ON. The v8/v9 conditional FF caused a
+            # relaxation oscillation (seen in the 153154 log: every time RPM
+            # crossed ~32, FF cut -> duty collapsed 0.6->0.1 -> RPM plunged ->
+            # FF back -> repeat, never staying in the +/-10% band). Its original
+            # job -- un-masking the brake after a launch spike -- is now done
+            # by the stall output cap, which prevents the spike entirely.
+            ff_l = PID_KFF * tgt_l
+            ff_r = PID_KFF * tgt_r
+
+            # v9: cap the P "kick" while far from target. A 30 RPM step puts
+            # KP*err = 0.6 duty on top of FF -> output saturates at ~1.0 for
+            # one 50 ms cycle -> wheel spikes to 43 RPM. The integrator is
+            # NOT capped, so friction compensation is unaffected.
+            p_l = PID_KP * err_l
+            p_r = PID_KP * err_r
+            # (cap skipped while stalled: full P is needed to break stiction)
+            if abs(err_l) > PID_ERR_FAR_RPM and not stalled_l:
+                p_l = _clamp(p_l, -PID_LAUNCH_P_CAP, PID_LAUNCH_P_CAP)
+            if abs(err_r) > PID_ERR_FAR_RPM and not stalled_r:
+                p_r = _clamp(p_r, -PID_LAUNCH_P_CAP, PID_LAUNCH_P_CAP)
+
+            out_l = p_l + integ_l + ff_l
+            out_r = p_r + integ_r + ff_r
 
             # ...part 2: conditional integration -- if the output saturated in
             # the same direction as the error, roll back this cycle's integral.
             if (out_l > 1.0 and err_l > 0.0) or (out_l < -1.0 and err_l < 0.0):
                 integ_l -= PID_KI * err_l * dt
-                out_l = PID_KP * err_l + integ_l + PID_KFF * tgt_l
+                out_l = p_l + integ_l + ff_l
             if (out_r > 1.0 and err_r > 0.0) or (out_r < -1.0 and err_r < 0.0):
                 integ_r -= PID_KI * err_r * dt
-                out_r = PID_KP * err_r + integ_r + PID_KFF * tgt_r
+                out_r = p_r + integ_r + ff_r
+
+            # v9: stall output cap -- while the wheel has not started, never
+            # apply more than breakaway duty (kills the launch spike).
+            if stalled_l:
+                out_l = _clamp(out_l, -PID_STALL_OUT_CAP, PID_STALL_OUT_CAP)
+            if stalled_r:
+                out_r = _clamp(out_r, -PID_STALL_OUT_CAP, PID_STALL_OUT_CAP)
 
             out_l = _clamp(out_l, -1.0, 1.0)
             out_r = _clamp(out_r, -1.0, 1.0)
@@ -547,7 +600,7 @@ def pid_loop():
 
 # --------------------------------- Boot --------------------------------------
 def main():
-    print("=== ESP32-S3 diff-drive bot firmware v7 (encoder-invert fix) ===")
+    print("=== ESP32-S3 diff-drive bot firmware v10 (stall cap + steady FF) ===")
     print("[CFG ] MOTOR_INVERT L=%s R=%s  ENCODER_INVERT L=%s R=%s"
           % (MOTOR_INVERT_L, MOTOR_INVERT_R,
              ENCODER_INVERT_L, ENCODER_INVERT_R))
