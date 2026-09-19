@@ -77,7 +77,7 @@ PASS = RPM rises clearly with duty (≈40 RPM @ 0.40 → 100+ @ 1.00).
 
 ### B2. WiFi control-loop tests (PID firmware running)
 ```bash
-python pc/test_suite.py --test 0 --ip 192.168.x.x   # link check
+python pc/test_suite.py --test 0 --ip 192.168.x.x   # link check (ususally 192.168.50.106)
 python pc/test_suite.py --test 1 --ip 192.168.x.x   # open-loop sanity
 python pc/test_suite.py --test 2 --ip 192.168.x.x   # step response (logs CSV)
 python pc/test_suite.py --test 3 --ip 192.168.x.x   # straight + turn

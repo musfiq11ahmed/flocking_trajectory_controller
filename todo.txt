@@ -1,7 +1,0 @@
-# one-time deploy (USB or Thonny), afterwards WiFi-only:
-mpremote connect COM13 fs cp firmware/motor_test_esp32.py :main.py
-mpremote connect COM13 reset
-
-# from the PC, no cable:
-python3 pc/motor_test_pc.py --discover
-python3 pc/motor_test_pc.py --ip 192.168.50.106

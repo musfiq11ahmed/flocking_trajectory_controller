@@ -122,6 +122,12 @@ ENCODER_TICKS_PER_REV = 1800.0
 PID_PERIOD_MS = 50                # control-loop period (main thread)
 PID_KP = 0.020                    # duty per RPM of error
 PID_KI = 0.040                    # duty per (RPM * s) of integrated error
+PID_KFF = 0.0148                  # v6: feedforward, duty per RPM of TARGET.
+                                  # Measured on this bot: 27.9 RPM @ 0.40 duty
+                                  # and 61.0 RPM @ 0.90 duty -> 0.0148 duty/RPM.
+                                  # Applies the expected duty instantly so the
+                                  # PI only trims the residual; cuts the 2-3 s
+                                  # stiction wind-up delay in step response.
 PID_INTEGRAL_LIMIT = 1.0          # anti-windup clamp on the integral term
 
 # --- PWM (machine.PWM) -------------------------------------------------------
@@ -477,17 +483,17 @@ def pid_loop():
             integ_l = _clamp(integ_l, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT)
             integ_r = _clamp(integ_r, -PID_INTEGRAL_LIMIT, PID_INTEGRAL_LIMIT)
 
-            out_l = PID_KP * err_l + integ_l
-            out_r = PID_KP * err_r + integ_r
+            out_l = PID_KP * err_l + integ_l + PID_KFF * tgt_l
+            out_r = PID_KP * err_r + integ_r + PID_KFF * tgt_r
 
             # ...part 2: conditional integration -- if the output saturated in
             # the same direction as the error, roll back this cycle's integral.
             if (out_l > 1.0 and err_l > 0.0) or (out_l < -1.0 and err_l < 0.0):
                 integ_l -= PID_KI * err_l * dt
-                out_l = PID_KP * err_l + integ_l
+                out_l = PID_KP * err_l + integ_l + PID_KFF * tgt_l
             if (out_r > 1.0 and err_r > 0.0) or (out_r < -1.0 and err_r < 0.0):
                 integ_r -= PID_KI * err_r * dt
-                out_r = PID_KP * err_r + integ_r
+                out_r = PID_KP * err_r + integ_r + PID_KFF * tgt_r
 
             out_l = _clamp(out_l, -1.0, 1.0)
             out_r = _clamp(out_r, -1.0, 1.0)
@@ -539,7 +545,7 @@ def pid_loop():
 
 # --------------------------------- Boot --------------------------------------
 def main():
-    print("=== ESP32-S3 diff-drive bot firmware v5 (direction invert flags) ===")
+    print("=== ESP32-S3 diff-drive bot firmware v6 (PID + feedforward) ===")
     print("[CFG ] MOTOR_INVERT L=%s R=%s  ENCODER_INVERT L=%s R=%s"
           % (MOTOR_INVERT_L, MOTOR_INVERT_R,
              ENCODER_INVERT_L, ENCODER_INVERT_R))
