@@ -459,36 +459,48 @@ class EmaPoseFilter(object):
         return self.x, self.y, self.theta
 
 
-def friction_compensate(v_left, v_right, min_speed=MIN_WHEEL_SPEED_MS):
-    """Anti-stall: if either wheel is commanded to move but the slower wheel
-    is below min_speed, scale BOTH wheels up so the slower one reaches
-    min_speed while preserving the turning ratio."""
+def shape_wheel_speeds(v_left, v_right,
+                       min_speed=MIN_WHEEL_SPEED_MS,
+                       max_speed=MAX_WHEEL_SPEED_MS):
+    """Clamp + anti-stall floor, in the ONLY order that works.
+
+    ORDER MATTERS -- the old friction_compensate()-then-clamp sequence
+    cancelled itself: scaling the slow wheel up by min/lo and then
+    clamping the fast wheel back down to max restores the ORIGINAL ratio
+    exactly, so the anti-stall floor vanished precisely when it was
+    needed (any turn sharper than lo/hi = min/max = 0.6). The robot then
+    received 1-15 RPM targets this drivetrain physically cannot execute
+    (minimum sustained wheel speed = 27 RPM): the slow wheel stalls, the
+    firmware stall-guard winds its integrator up, the wheel breaks free
+    at 27+ RPM and lurches -- on the ground this looks like the bot
+    "spinning randomly in place" (confirmed by telemetry in the Test 4
+    log: commanded vR=0.00-0.03 m/s while the physical wheel reported
+    34-48 RPM).
+
+    Here the clamp runs FIRST (turning ratio preserved), then any wheel
+    that is moving-but-below-the-floor is bumped up to min_speed (sign
+    preserved). Nothing clamps afterwards, so the floor always survives.
+    Bumping only the slow wheel distorts the ratio slightly (turns run a
+    little wider than requested); the 20 Hz pose feedback loop corrects
+    the heading on the very next cycle, and every command sent is one
+    the motors can actually track.
+    """
     a_l, a_r = abs(v_left), abs(v_right)
-    hi, lo = max(a_l, a_r), min(a_l, a_r)
-    if hi < 1e-9:
-        return 0.0, 0.0                      # no motion commanded
-    if lo >= min_speed:
-        return v_left, v_right               # already above the floor
-    if lo < 1e-9:
-        # Pivot (one wheel at zero): put the stopped wheel at min_speed in
-        # the direction of the moving wheel's motion.
-        if a_l < a_r:
-            v_left = math.copysign(min_speed, v_right)
-        else:
-            v_right = math.copysign(min_speed, v_left)
-        return v_left, v_right
-    scale = min_speed / lo
-    return v_left * scale, v_right * scale
-
-
-def clamp_wheel_speeds(v_left, v_right, max_speed=MAX_WHEEL_SPEED_MS):
-    """Cap wheel speeds at max_speed, scaling both down together to preserve
-    the turning ratio."""
-    hi = max(abs(v_left), abs(v_right))
+    if a_l < 1e-9 and a_r < 1e-9:
+        return 0.0, 0.0                       # no motion commanded
+    # 1) clamp to max, ratio preserved
+    hi = max(a_l, a_r)
     if hi > max_speed:
         s = max_speed / hi
         v_left *= s
         v_right *= s
+    # 2) anti-stall floor (survives because nothing clamps after this).
+    #    A wheel at exact zero stays stopped: a true pivot about a
+    #    dragged wheel is executable and tighter than a wide arc.
+    if 0.0 < abs(v_left) < min_speed:
+        v_left = math.copysign(min_speed, v_left)
+    if 0.0 < abs(v_right) < min_speed:
+        v_right = math.copysign(min_speed, v_right)
     return v_left, v_right
 
 
@@ -501,8 +513,8 @@ def compute_wheel_speeds(px, py, ptheta, wx, wy, wtheta,
       5. Euclidean distance + shortest-path heading error to the target.
          (Inside FINAL_ALIGN_RADIUS_M, steer to the waypoint's own theta.)
       6. v = k_rho * dist, w = k_alpha * heading_error, split to wheels.
-      7. Friction compensation: min wheel speed >= 0.15 m/s, ratio preserved.
-      8. Clamp: max wheel speed <= 0.30 m/s, ratio preserved.
+      7. Shape for the drivetrain: clamp to MAX_WHEEL_SPEED_MS, then lift
+         any moving wheel to the MIN_WHEEL_SPEED_MS anti-stall floor.
     """
     dx = wx - px
     dy = wy - py
@@ -518,8 +530,9 @@ def compute_wheel_speeds(px, py, ptheta, wx, wy, wtheta,
     v_left = v - w * TRACK_WIDTH_M / 2.0
     v_right = v + w * TRACK_WIDTH_M / 2.0
 
-    v_left, v_right = friction_compensate(v_left, v_right, MIN_WHEEL_SPEED_MS)
-    v_left, v_right = clamp_wheel_speeds(v_left, v_right, MAX_WHEEL_SPEED_MS)
+    v_left, v_right = shape_wheel_speeds(v_left, v_right,
+                                         MIN_WHEEL_SPEED_MS,
+                                         MAX_WHEEL_SPEED_MS)
     return v_left, v_right, dist, heading_err
 
 
@@ -584,9 +597,9 @@ def run_waypoint_navigation(link, waypoints, pose_source, noise_desc="",
             else None
 
         # Stage 1a -- approach: drive to the origin with the same control
-        # law. The anti-stall floor (0.15 m/s min wheel speed) means the
-        # robot cannot park dead-on, so "arrived" is HOME_POS_TOL_M; the
-        # heading is aligned afterwards in stage 1b.
+        # law. The anti-stall floor (MIN_WHEEL_SPEED_MS per wheel) means
+        # the robot cannot park dead-on, so "arrived" is HOME_POS_TOL_M;
+        # the heading is aligned afterwards in stage 1b.
         while True:
             now = time.monotonic()
             dt = max(now - t_prev, 1e-3)
@@ -630,9 +643,8 @@ def run_waypoint_navigation(link, waypoints, pose_source, noise_desc="",
             w = K_ALPHA * herr                     # pivot: v = 0, spin only
             v_left = -w * TRACK_WIDTH_M / 2.0
             v_right = +w * TRACK_WIDTH_M / 2.0
-            v_left, v_right = friction_compensate(v_left, v_right,
-                                                  MIN_WHEEL_SPEED_MS)
-            v_left, v_right = clamp_wheel_speeds(v_left, v_right,
+            v_left, v_right = shape_wheel_speeds(v_left, v_right,
+                                                 MIN_WHEEL_SPEED_MS,
                                                  MAX_WHEEL_SPEED_MS)
             link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
             pose_source.update(v_left, v_right, dt)
@@ -676,7 +688,7 @@ def run_waypoint_navigation(link, waypoints, pose_source, noise_desc="",
         raw_x, raw_y, raw_theta = pose_source.read()
         px, py, ptheta = filt.update(raw_x, raw_y, raw_theta)
 
-        # Tasks 5-8: errors -> unicycle law -> friction comp -> clamp.
+        # Tasks 5-8: errors -> unicycle law -> drivetrain shaping.
         wx, wy, wtheta = waypoints[wp_index]
         v_left, v_right, dist, herr = compute_wheel_speeds(px, py, ptheta,
                                                            wx, wy, wtheta)
