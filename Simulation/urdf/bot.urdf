@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<robot name="bot">
+<link name="chassis">
+  <visual name="chassis">
+    <origin xyz="0.0000 0.0000 0.0400" rpy="0 0 0"/>
+    <geometry><box size="0.3000 0.2000 0.0800"/></geometry>
+    <material name="chassis_mat"><color rgba="0.4500 0.4500 0.4500 1.0000"/></material>
+  </visual>
+  <collision>
+    <origin xyz="0 0 0.0400" rpy="0 0 0"/>
+    <geometry><box size="0.3000 0.2000 0.0800"/></geometry>
+  </collision>
+  <inertial><mass value="1.0000"/><inertia ixx="0.003867" ixy="0" ixz="0" iyy="0.008033" iyz="0" izz="0.010833"/></inertial>
+</link>
+<link name="top_plate">
+  <visual name="top_plate">
+    <origin xyz="0.0000 0.0000 0.0050" rpy="0 0 0"/>
+    <geometry><box size="0.2500 0.1300 0.0100"/></geometry>
+    <material name="top_plate_mat"><color rgba="1.0000 1.0000 1.0000 1.0000"/></material>
+  </visual>
+  <inertial><mass value="0.02"/><inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/></inertial>
+</link>
+<joint name="top_plate_joint" type="fixed">
+  <parent link="chassis"/>
+  <child link="top_plate"/>
+  <origin xyz="-0.0250 0.0150 0.0800" rpy="0 0 0"/>
+</joint>
+<link name="nose_stripe">
+  <visual name="nose_stripe">
+    <origin xyz="0.0000 0.0000 0.0030" rpy="0 0 0"/>
+    <geometry><box size="0.0400 0.0700 0.0060"/></geometry>
+    <material name="nose_stripe_mat"><color rgba="0.0200 0.0200 0.0200 1.0000"/></material>
+  </visual>
+  <inertial><mass value="0.005"/><inertia ixx="1e-6" ixy="0" ixz="0" iyy="1e-6" iyz="0" izz="1e-6"/></inertial>
+</link>
+<joint name="nose_stripe_joint" type="fixed">
+  <parent link="chassis"/>
+  <child link="nose_stripe"/>
+  <origin xyz="0.0700 0.0000 0.0900" rpy="0 0 0"/>
+</joint>
+</robot>
