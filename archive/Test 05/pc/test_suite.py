@@ -799,8 +799,7 @@ def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003,
               "DICT_4X4_50, camera index %d)" % camera_index)
         try:
             pose_source = camera_pose.CameraPoseSource(
-                camera_index=camera_index, debug_view=debug_view,
-                latency_s=latency_s, focus=focus, exposure=exposure)
+                camera_index=camera_index, debug_view=debug_view)
         except camera_pose.CameraPoseError as exc:
             print("  FAILED to start camera: %s" % exc)
             return False
@@ -821,8 +820,7 @@ def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003,
 
     try:
         elapsed, final_filtered_err = run_waypoint_navigation(
-            link, waypoints, pose_source, wp_timeout_s=wp_timeout_s,
-            home_first=home_first, home_timeout_s=home_timeout_s)
+            link, waypoints, pose_source, wp_timeout_s=wp_timeout_s)
     except Exception as exc:
         # CameraPoseError (driving blind) or anything else: stop sending and
         # coast explicitly rather than leaving the last command running.
@@ -834,23 +832,18 @@ def test4_waypoint_nav(link, csv_path=DEFAULT_CSV, noise_std=0.003,
         if pose_mode == "camera" and pose_source is not None:
             pose_source.close()
         return False
+    if pose_mode == "camera" and pose_source is not None:
+        pose_source.close()
+
     # Diagnostic: error between the simulated robot's TRUE pose and the final
     # waypoint. The arrival decisions above (and any real deployment) can only
     # use the filtered state estimate, so PASS is based on that; the true error
-    # shows the EMA lag / noise residue for reference. Read BEFORE closing a
-    # camera pose source, and never let this diagnostic crash a successful run.
-    try:
-        fx, fy, _ft = pose_source.read()
-    except Exception as exc:
-        fx, fy, _ft = waypoints[-1]
-        print("  final diagnostic pose read failed (%s); using goal as reference"
-              % exc)
+    # shows the EMA lag / noise residue for reference.
+    fx, fy, _ft = pose_source.read()
     tx = getattr(pose_source, "x", fx)   # SimulatedPoseSource exposes the true
     ty = getattr(pose_source, "y", fy)   # pose; a camera source would not
     gx, gy, _gt = waypoints[-1]
     true_err = math.hypot(gx - tx, gy - ty)
-    if pose_mode == "camera" and pose_source is not None:
-        pose_source.close()
     ok = final_filtered_err <= ARRIVAL_TOLERANCE_M
     print("  all %d waypoints traversed in %.1f s" % (len(waypoints), elapsed))
     print("  final error: filtered(estimated) %.3f m | true(sim) %.3f m"

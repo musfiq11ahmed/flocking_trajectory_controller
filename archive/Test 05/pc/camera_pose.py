@@ -275,7 +275,6 @@ class CameraPoseSource(object):
 
         self._H = None              # last good pixel->arena homography
         self._H_time = 0.0
-        self._homography_locked = False  # True after the operator locks calibration
         self._last_pose = None      # last MEASURED (delayed) pose
         self._last_pose_time = 0.0  # monotonic time of that measurement
         self._v_cmd = 0.0           # commanded unicycle v [m/s] (from update)
@@ -307,29 +306,6 @@ class CameraPoseSource(object):
             return self.latency_s
         return self.latency_frames * self.frame_period_s
 
-    # -- calibration -------------------------------------------------------------
-    @property
-    def homography_locked(self):
-        """True once the operator has frozen the arena calibration."""
-        return self._homography_locked
-
-    def lock_homography(self, H):
-        """Freeze the pixel->arena homography used by read().
-
-        While locked, anchor-marker dropouts do not expire the calibration and
-        later frames never overwrite it. Call unlock_homography() to recalibrate.
-        """
-        if H is None:
-            raise CameraPoseError("cannot lock calibration: homography is None")
-        self._H = np.array(H, dtype=np.float64, copy=True)
-        self._H_time = time.monotonic()
-        self._homography_locked = True
-
-    def unlock_homography(self):
-        """Return to per-frame homography estimation (recalibration mode)."""
-        self._homography_locked = False
-        self._H_time = 0.0
-
     # -- frame grabbing ---------------------------------------------------------
     def _read_fresh(self):
         """Grab the freshest frame, dropping anything queued by the driver.
@@ -342,12 +318,14 @@ class CameraPoseSource(object):
         ok, frame = self._cap.read()
         return ok, frame
 
-    def grab_detections(self):
-        """Grab one fresh frame and return (frame, detections, grab_time).
+    # -- pose-source API ----------------------------------------------------
+    def read(self):
+        """Return (x, y, theta) in the arena frame (m, m, rad CCW from +X),
+        DEAD-RECKONED FORWARD to 'now' to compensate camera latency.
 
-        This is the calibration/monitoring primitive: it does NOT require the
-        robot marker and never raises because marker 4 is absent. It updates the
-        same FPS/diagnostic counters used by read().
+        Falls back to the last measured pose for up to max_hold_s (also
+        predicted forward); raises CameraPoseError after that so the caller
+        can coast the robot.
         """
         ok, frame = self._read_fresh()
         if not ok or frame is None:
@@ -358,37 +336,17 @@ class CameraPoseSource(object):
             self._frame_times.pop(0)
         self.frames_read += 1
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if self.use_clahe:
-            gray = self._clahe.apply(gray)
-        detections = detect_markers(self._detector, gray)
+        detections = detect_markers(self._detector, cv2.cvtColor(
+            frame, cv2.COLOR_BGR2GRAY))
         self.last_detected_ids = sorted(detections.keys())
-        return frame, detections, t_grab
 
-    # -- pose-source API ----------------------------------------------------
-    def read(self):
-        """Return (x, y, theta) in the arena frame (m, m, rad CCW from +X),
-        DEAD-RECKONED FORWARD to 'now' to compensate camera latency.
-
-        Falls back to the last measured pose for up to max_hold_s (also
-        predicted forward); raises CameraPoseError after that so the caller
-        can coast the robot.
-        """
-        frame, detections, t_grab = self.grab_detections()
-
-        # Calibration policy:
-        #   unlocked: refresh H whenever all four arena markers are visible and
-        #             tolerate a short dropout on the last good H;
-        #   locked:   the operator pressed 'c' -- H is frozen and never expires
-        #             just because an anchor is temporarily occluded.
-        if self._homography_locked:
-            H = self._H
-        else:
-            H_new = compute_homography(detections)
-            if H_new is not None:
-                self._H, self._H_time = H_new, t_grab   # (matrix, timestamp)!
-            H = self._H if (self._H is not None
-                            and t_grab - self._H_time <= self.h_max_age_s) else None
+        # Refresh the homography whenever all four arena markers are visible;
+        # otherwise reuse the last good H for a short dropout window.
+        H_new = compute_homography(detections)
+        if H_new is not None:
+            self._H, self._H_time = H_new, t_grab   # (matrix, timestamp)!
+        H = self._H if (self._H is not None
+                        and t_grab - self._H_time <= self.h_max_age_s) else None
 
         measured = None
         if H is not None and ROBOT_MARKER_ID in detections:
@@ -444,11 +402,6 @@ class CameraPoseSource(object):
             cv2.destroyAllWindows()
 
     # -- debug ---------------------------------------------------------------
-    def show_debug_frame(self, frame, detections, H=None, pose=None, measured=None):
-        """Public debug renderer for calibration/monitoring loops."""
-        if self.debug_view:
-            self._show_debug(frame, detections, H, pose, measured)
-
     def _show_debug(self, frame, detections, H, pose, measured):
         vis = frame.copy()
         h_img, w_img = vis.shape[:2]
