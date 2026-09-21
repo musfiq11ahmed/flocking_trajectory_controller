@@ -42,11 +42,14 @@ from test_suite import (
 )
 
 DEFAULT_DISTANCE_M = 1.0
-DEFAULT_ALIGN_TOL_RAD = 0.10       # about +/-5.7 deg; anti-stall floor limits finer pivoting
-DEFAULT_ALIGN_TIMEOUT_S = 20.0
+DEFAULT_ALIGN_TOL_RAD = 0.10       # about +/-5.7 deg; confirmed over several stable reads
+DEFAULT_ALIGN_TIMEOUT_S = 30.0     # pulsed alignment is slower but much less jerky
 DEFAULT_MOVE_TIMEOUT_S = 30.0
 DEFAULT_MOVE_TOL_M = 0.05          # target is distance +/- this band, not an exact point
 DEFAULT_LATERAL_TOL_M = 0.06       # acceptable lateral band around the +X line
+DEFAULT_MOVE_SPEED_MS = 0.30       # user-validated smooth translation speed
+ALIGN_WHEEL_SPEED_MS = MIN_WHEEL_SPEED_MS  # slowest executable pivot speed
+ALIGN_STABLE_SAMPLES = 4           # require this many in-tolerance reads while coasting
 MAX_COAST_TRIGGER_M = 0.05         # never drive past the near edge of the target band
 MOVE_V_GAIN = 1.5
 POSE_STABLE_SAMPLES = 5
@@ -196,6 +199,10 @@ def calibrate_camera(args, keys):
     src = camera_pose.CameraPoseSource(
         camera_index=args.camera_index,
         debug_view=args.debug_view,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        mjpeg=not args.no_mjpeg,
         latency_s=args.latency_s,
         focus=args.focus,
         exposure=args.exposure,
@@ -277,16 +284,40 @@ def wait_for_robot_pose(pose_source, timeout_s=25.0, camera_mode=True, keys=None
         time.sleep(CMD_PERIOD)
 
 
+def _align_pulse_times(abs_herr):
+    """Short rotate/settle pulses for low-FPS, high-stiction alignment."""
+    if abs_herr > 1.0:
+        return 0.10, 0.25
+    if abs_herr > 0.35:
+        return 0.07, 0.25
+    return 0.05, 0.30
+
+
 def align_to_heading(link, pose_source, filt, target_theta=0.0,
                      tol_rad=DEFAULT_ALIGN_TOL_RAD,
-                     timeout_s=DEFAULT_ALIGN_TIMEOUT_S, keys=None):
-    """Closed-loop pivot in place until filtered heading matches target_theta."""
+                     timeout_s=DEFAULT_ALIGN_TIMEOUT_S, keys=None,
+                     align_wheel_speed_ms=ALIGN_WHEEL_SPEED_MS,
+                     stable_samples=ALIGN_STABLE_SAMPLES):
+    """Smooth pulsed pivot until heading is stably inside tolerance.
+
+    Continuous pivoting was too aggressive for a low-FPS camera: the marker
+    heading could swing during the blind settle window and produce a false
+    "aligned" read. Here we rotate in short pulses, coast while re-measuring,
+    and only declare alignment after several consecutive in-tolerance reads.
+    """
     print("\nSTEP 4/5 - ALIGN TO +X")
-    print("  Pivoting in place to theta=%.2f rad (tolerance %.2f rad)." % (
+    print("  Smooth pulsed pivot to theta=%.2f rad (tolerance %.2f rad)." % (
         target_theta, tol_rad))
+    print("  Using short %.2f m/s wheel pulses with coast-and-remeasure settling." % (
+        align_wheel_speed_ms))
     t0 = time.monotonic()
     last_print = 0.0
     t_prev = t0
+    stable = 0
+    phase = "sense"          # "rotate" or "settle"
+    phase_until = t0
+    direction = 0            # +1 = CCW (theta increases), -1 = CW
+    v_left = v_right = 0.0
     while True:
         _poll_abort(keys)
         now = time.monotonic()
@@ -302,23 +333,43 @@ def align_to_heading(link, pose_source, filt, target_theta=0.0,
             raise
         px, py, ptheta = filt.update(*raw)
         herr = wrap_pi(target_theta - ptheta)
+
         if abs(herr) <= tol_rad:
-            break
-        omega = K_ALPHA * herr
-        v_left = -omega * TRACK_WIDTH_M / 2.0
-        v_right = +omega * TRACK_WIDTH_M / 2.0
-        v_left, v_right = shape_wheel_speeds(
-            v_left, v_right, MIN_WHEEL_SPEED_MS, MAX_WHEEL_SPEED_MS)
-        link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
-        pose_source.update(v_left, v_right, dt)
+            stable += 1
+            phase = "sense"
+            link.send_command(0.0, 0.0)
+            pose_source.update(0.0, 0.0, dt)
+            if stable >= stable_samples:
+                break
+        else:
+            stable = 0
+            pulse_s, settle_s = _align_pulse_times(abs(herr))
+            if phase == "rotate" and now >= phase_until:
+                phase = "settle"
+                phase_until = now + settle_s
+            elif phase != "rotate" and now >= phase_until:
+                direction = 1.0 if herr > 0.0 else -1.0
+                phase = "rotate"
+                phase_until = now + pulse_s
+
+            if phase == "rotate":
+                # herr > 0 -> rotate CCW: left wheel backward, right wheel forward.
+                v_left = -direction * align_wheel_speed_ms
+                v_right = +direction * align_wheel_speed_ms
+            else:
+                v_left = v_right = 0.0
+            link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
+            pose_source.update(v_left, v_right, dt)
+
         if now - last_print >= 0.5:
             last_print = now
-            print("  [align] pose=(%+.3f,%+.3f,%+.2f) heading error=%+.2f rad" % (
-                px, py, ptheta, herr))
+            print("  [align] pose=(%+.3f,%+.3f,%+.2f) herr=%+.2f rad phase=%s stable=%d/%d" % (
+                px, py, ptheta, herr, phase, stable, stable_samples))
         sleep_s = CMD_PERIOD - (time.monotonic() - now)
         if sleep_s > 0.0:
             time.sleep(sleep_s)
-    coast(link, 0.35, pose_source)
+
+    coast(link, 0.50, pose_source)
     try:
         raw = pose_source.read()
         px, py, ptheta = filt.update(*raw)
@@ -328,10 +379,14 @@ def align_to_heading(link, pose_source, filt, target_theta=0.0,
     final_err = wrap_pi(target_theta - ptheta)
     print("  ALIGN COMPLETE: theta=%+.2f rad (error %+.2f rad)" % (
         ptheta, final_err))
+    if abs(final_err) > tol_rad:
+        print("  WARNING: heading drifted after the settle coast; consider a")
+        print("  larger --align-tol or slower camera latency tuning.")
     return (px, py, ptheta), filt
 
 
-def _straight_move_command(px, py, ptheta, target_x, target_y, coast_trigger_m):
+def _straight_move_command(px, py, ptheta, target_x, target_y, coast_trigger_m,
+                           move_speed_ms):
     """Wheel speeds for straight +X travel with small heading/lateral correction."""
     remaining_x = target_x - px
     lateral = target_y - py
@@ -340,14 +395,14 @@ def _straight_move_command(px, py, ptheta, target_x, target_y, coast_trigger_m):
     else:
         desired_heading = 0.0        # near the band, hold +X instead of turning
     herr = wrap_pi(desired_heading - ptheta)
-    v = min(MAX_WHEEL_SPEED_MS, max(0.0, MOVE_V_GAIN * remaining_x))
+    v = min(move_speed_ms, max(0.0, MOVE_V_GAIN * remaining_x))
     if 0.0 < v < MIN_WHEEL_SPEED_MS and remaining_x > coast_trigger_m:
         v = MIN_WHEEL_SPEED_MS
     omega = K_ALPHA * herr
     v_left = v - omega * TRACK_WIDTH_M / 2.0
     v_right = v + omega * TRACK_WIDTH_M / 2.0
     v_left, v_right = shape_wheel_speeds(
-        v_left, v_right, MIN_WHEEL_SPEED_MS, MAX_WHEEL_SPEED_MS)
+        v_left, v_right, MIN_WHEEL_SPEED_MS, move_speed_ms)
     return v_left, v_right, remaining_x, lateral, herr
 
 
@@ -355,7 +410,8 @@ def move_forward_distance(link, pose_source, filt, start_pose,
                           distance_m=DEFAULT_DISTANCE_M,
                           move_tol_m=DEFAULT_MOVE_TOL_M,
                           lateral_tol_m=DEFAULT_LATERAL_TOL_M,
-                          timeout_s=DEFAULT_MOVE_TIMEOUT_S, keys=None):
+                          timeout_s=DEFAULT_MOVE_TIMEOUT_S, keys=None,
+                          move_speed_ms=DEFAULT_MOVE_SPEED_MS):
     """Move forward until the bot enters the target band around distance_m.
 
     The environment is noisy (dust, uneven mat, low-FPS camera, wheel slip), so
@@ -369,6 +425,7 @@ def move_forward_distance(link, pose_source, filt, start_pose,
     print("\nSTEP 5/5 - MOVE FORWARD %.2f m" % distance_m)
     print("  Target band: displacement %.2f..%.2f m, lateral +/-%.2f m." % (
         distance_m - move_tol_m, distance_m + move_tol_m, lateral_tol_m))
+    print("  Translation speed limit: %.2f m/s." % move_speed_ms)
     print("  The bot is successful when it ENTERS this band; it will not keep")
     print("  nudging toward an exact coordinate.")
     t0 = time.monotonic()
@@ -408,7 +465,7 @@ def move_forward_distance(link, pose_source, filt, start_pose,
             break
 
         v_left, v_right, remaining_x, lateral, herr = _straight_move_command(
-            px, py, ptheta, target_x, target_y, coast_trigger_m)
+            px, py, ptheta, target_x, target_y, coast_trigger_m, move_speed_ms)
         if driving and remaining_x <= coast_trigger_m:
             # Near the near edge of the band: stop driving and let the bot coast
             # into the acceptable range instead of correcting to the exact point.
@@ -480,12 +537,14 @@ def run_real_workflow(args, keys):
             aligned_pose, filt = align_to_heading(
                 link, pose_source, filt, target_theta=0.0,
                 tol_rad=args.align_tol, timeout_s=args.align_timeout,
-                keys=motion_keys)
+                keys=motion_keys,
+                align_wheel_speed_ms=args.align_wheel_speed,
+                stable_samples=args.align_stable)
             ok, _final = move_forward_distance(
                 link, pose_source, filt, aligned_pose,
                 distance_m=args.distance, move_tol_m=args.move_tol,
                 lateral_tol_m=args.lateral_tol, timeout_s=args.move_timeout,
-                keys=motion_keys)
+                keys=motion_keys, move_speed_ms=args.speed)
             return ok
         finally:
             motion_keys.close()
@@ -509,11 +568,13 @@ def run_sim_workflow(args):
     _pose, filt = wait_for_robot_pose(pose_source, timeout_s=5.0, camera_mode=False)
     aligned_pose, filt = align_to_heading(
         link, pose_source, filt, target_theta=0.0,
-        tol_rad=args.align_tol, timeout_s=args.align_timeout)
+        tol_rad=args.align_tol, timeout_s=args.align_timeout,
+        align_wheel_speed_ms=args.align_wheel_speed,
+        stable_samples=args.align_stable)
     ok, final_pose = move_forward_distance(
         link, pose_source, filt, aligned_pose, distance_m=args.distance,
         move_tol_m=args.move_tol, lateral_tol_m=args.lateral_tol,
-        timeout_s=args.move_timeout)
+        timeout_s=args.move_timeout, move_speed_ms=args.speed)
     print("  Simulated final pose: x=%.3f y=%.3f theta=%.2f rad" % final_pose)
     return ok
 
@@ -523,6 +584,14 @@ def build_parser():
         description="Lock arena homography with 'c', align bot to +X, move 1 m.")
     parser.add_argument("--ip", help="robot IP address (prompted after calibration if omitted)")
     parser.add_argument("--camera-index", type=int, default=0)
+    parser.add_argument("--width", type=int, default=2560,
+                        help="camera width (try 1280 if the driver rejects 2K)")
+    parser.add_argument("--height", type=int, default=1440,
+                        help="camera height (try 720 if the driver rejects 2K)")
+    parser.add_argument("--fps", type=int, default=0,
+                        help="explicit camera FPS request (default 0 = do not set)")
+    parser.add_argument("--no-mjpeg", action="store_true",
+                        help="do not force MJPEG (use if the driver rejects MJPG)")
     parser.add_argument("--debug-view", action="store_true",
                         help="show the annotated camera window (terminal keys still work)")
     parser.add_argument("--focus", type=float, default=None,
@@ -541,6 +610,12 @@ def build_parser():
     parser.add_argument("--align-tol", type=float, default=DEFAULT_ALIGN_TOL_RAD,
                         help="heading alignment tolerance in rad")
     parser.add_argument("--align-timeout", type=float, default=DEFAULT_ALIGN_TIMEOUT_S)
+    parser.add_argument("--align-wheel-speed", type=float, default=ALIGN_WHEEL_SPEED_MS,
+                        help="wheel speed used for short alignment pulses in m/s")
+    parser.add_argument("--align-stable", type=int, default=ALIGN_STABLE_SAMPLES,
+                        help="consecutive in-tolerance reads required before alignment is accepted")
+    parser.add_argument("--speed", type=float, default=DEFAULT_MOVE_SPEED_MS,
+                        help="translation speed limit for the 1 m move in m/s")
     parser.add_argument("--distance", type=float, default=DEFAULT_DISTANCE_M,
                         help="forward distance in meters (default 1.0)")
     parser.add_argument("--move-tol", type=float, default=DEFAULT_MOVE_TOL_M,
@@ -575,6 +650,9 @@ def main():
         return 2
     except KeyboardInterrupt:
         print("\nABORTED: Ctrl-C")
+        return 2
+    except Exception as exc:
+        print("\nERROR: %s" % exc)
         return 2
     finally:
         keys.close()
