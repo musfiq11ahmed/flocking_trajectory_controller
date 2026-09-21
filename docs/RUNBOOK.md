@@ -151,6 +151,8 @@ python pc\arena_calibrate_move.py --camera-index 1 --debug-view
 python pc\arena_calibrate_move.py --camera-index 1 --debug-view
 python pc\arena_calibrate_move.py --camera-index 1 --debug-view --speed 0.30 --align-wheel-speed 0.06 --align-stable 4
 
+python pc\arena_calibrate_move.py --camera-index 1 --debug-view --align-wheel-speed 0.10
+
 What you will see:
 1. CSV loads, waypoints shift into the arena frame (file on disk untouched).
 2. **HOMING**: the robot drives from wherever it sits to the trajectory

@@ -48,8 +48,11 @@ DEFAULT_MOVE_TIMEOUT_S = 30.0
 DEFAULT_MOVE_TOL_M = 0.05          # target is distance +/- this band, not an exact point
 DEFAULT_LATERAL_TOL_M = 0.06       # acceptable lateral band around the +X line
 DEFAULT_MOVE_SPEED_MS = 0.30       # user-validated smooth translation speed
-ALIGN_WHEEL_SPEED_MS = MIN_WHEEL_SPEED_MS  # slowest executable pivot speed
+ALIGN_WHEEL_SPEED_MS = 0.08       # just above anti-stall so pulses reliably break static friction
 ALIGN_STABLE_SAMPLES = 4           # require this many in-tolerance reads while coasting
+ALIGN_PULSE_THRESHOLD_RAD = 0.35  # slew continuously only when far from target
+ALIGN_NEAR_PULSE_S = 0.25         # long enough for the PID to break stiction
+ALIGN_NEAR_SETTLE_S = 0.35        # coast-and-remeasure window near the target
 MAX_COAST_TRIGGER_M = 0.05         # never drive past the near edge of the target band
 MOVE_V_GAIN = 1.5
 POSE_STABLE_SAMPLES = 5
@@ -284,37 +287,27 @@ def wait_for_robot_pose(pose_source, timeout_s=25.0, camera_mode=True, keys=None
         time.sleep(CMD_PERIOD)
 
 
-def _align_pulse_times(abs_herr):
-    """Short rotate/settle pulses for low-FPS, high-stiction alignment."""
-    if abs_herr > 1.0:
-        return 0.10, 0.25
-    if abs_herr > 0.35:
-        return 0.07, 0.25
-    return 0.05, 0.30
-
-
 def align_to_heading(link, pose_source, filt, target_theta=0.0,
                      tol_rad=DEFAULT_ALIGN_TOL_RAD,
                      timeout_s=DEFAULT_ALIGN_TIMEOUT_S, keys=None,
                      align_wheel_speed_ms=ALIGN_WHEEL_SPEED_MS,
                      stable_samples=ALIGN_STABLE_SAMPLES):
-    """Smooth pulsed pivot until heading is stably inside tolerance.
+    """Smooth hybrid pivot until heading is stably inside tolerance.
 
-    Continuous pivoting was too aggressive for a low-FPS camera: the marker
-    heading could swing during the blind settle window and produce a false
-    "aligned" read. Here we rotate in short pulses, coast while re-measuring,
-    and only declare alignment after several consecutive in-tolerance reads.
+    Far from the target, use a slow continuous slew so the motors definitely
+    move. Near the target, switch to longer coast-and-remeasure pulses so the
+    low-FPS camera can catch the true heading before alignment is accepted.
     """
     print("\nSTEP 4/5 - ALIGN TO +X")
-    print("  Smooth pulsed pivot to theta=%.2f rad (tolerance %.2f rad)." % (
+    print("  Hybrid slew+pulse align to theta=%.2f rad (tolerance %.2f rad)." % (
         target_theta, tol_rad))
-    print("  Using short %.2f m/s wheel pulses with coast-and-remeasure settling." % (
-        align_wheel_speed_ms))
+    print("  Far error: slow continuous slew at %.2f m/s; near target: %.2fs pulses." % (
+        align_wheel_speed_ms, ALIGN_NEAR_PULSE_S))
     t0 = time.monotonic()
     last_print = 0.0
     t_prev = t0
     stable = 0
-    phase = "sense"          # "rotate" or "settle"
+    phase = "sense"          # "slew", "rotate", or "settle"
     phase_until = t0
     direction = 0            # +1 = CCW (theta increases), -1 = CW
     v_left = v_right = 0.0
@@ -343,23 +336,34 @@ def align_to_heading(link, pose_source, filt, target_theta=0.0,
                 break
         else:
             stable = 0
-            pulse_s, settle_s = _align_pulse_times(abs(herr))
-            if phase == "rotate" and now >= phase_until:
-                phase = "settle"
-                phase_until = now + settle_s
-            elif phase != "rotate" and now >= phase_until:
-                direction = 1.0 if herr > 0.0 else -1.0
-                phase = "rotate"
-                phase_until = now + pulse_s
-
-            if phase == "rotate":
-                # herr > 0 -> rotate CCW: left wheel backward, right wheel forward.
+            direction = 1.0 if herr > 0.0 else -1.0
+            if abs(herr) > ALIGN_PULSE_THRESHOLD_RAD:
+                # Far away: continuous slow slew guarantees motion and covers
+                # most of the angle quickly without a high RPM command.
+                phase = "slew"
                 v_left = -direction * align_wheel_speed_ms
                 v_right = +direction * align_wheel_speed_ms
+                link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
+                pose_source.update(v_left, v_right, dt)
             else:
-                v_left = v_right = 0.0
-            link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
-            pose_source.update(v_left, v_right, dt)
+                # Near target: if we were slewing, first coast and remeasure.
+                if phase == "slew":
+                    phase = "settle"
+                    phase_until = now + ALIGN_NEAR_SETTLE_S
+                if phase == "rotate" and now >= phase_until:
+                    phase = "settle"
+                    phase_until = now + ALIGN_NEAR_SETTLE_S
+                elif phase != "rotate" and now >= phase_until:
+                    phase = "rotate"
+                    phase_until = now + ALIGN_NEAR_PULSE_S
+
+                if phase == "rotate":
+                    v_left = -direction * align_wheel_speed_ms
+                    v_right = +direction * align_wheel_speed_ms
+                else:
+                    v_left = v_right = 0.0
+                link.send_command(ms_to_rpm(v_left), ms_to_rpm(v_right))
+                pose_source.update(v_left, v_right, dt)
 
         if now - last_print >= 0.5:
             last_print = now
@@ -381,7 +385,7 @@ def align_to_heading(link, pose_source, filt, target_theta=0.0,
         ptheta, final_err))
     if abs(final_err) > tol_rad:
         print("  WARNING: heading drifted after the settle coast; consider a")
-        print("  larger --align-tol or slower camera latency tuning.")
+        print("  larger --align-tol or camera latency tuning.")
     return (px, py, ptheta), filt
 
 
