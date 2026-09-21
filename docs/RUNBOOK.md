@@ -144,6 +144,9 @@ python pc/test_suite.py --test 4 --pose camera --ip 192.168.x.x \
 
 ### SKIP TEST 4 AND RUN:
 python pc\arena_calibrate_move.py --camera-index 1 --debug-view
+python pc\arena_calibrate_move.py --camera-index 1 --width 1280 --height 720 --no-mjpeg --debug-view
+python pc\arena_calibrate_move.py --camera-index 1 --width 1280 --height 720 --debug-view
+python pc\arena_calibrate_move.py --camera-index 1 --debug-view
 
 What you will see:
 1. CSV loads, waypoints shift into the arena frame (file on disk untouched).
