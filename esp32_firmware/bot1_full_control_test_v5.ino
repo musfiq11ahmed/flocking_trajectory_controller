@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <WiFiUdp.h>
+#include "secrets.h"
 
 
 // 1. GLOBAL PINS & HARDWARE CONSTANTS
@@ -67,8 +68,8 @@ void NetworkTask(void *pvParameters) {
   char packetBuffer[255];
 
   Serial.println("Core 0: Connecting to Wi-Fi...");
-  wifiMulti.addAP("D12", "abid6.30");
-  wifiMulti.addAP("ASUS_1E_NIRO_2.4G", "niro@2026");
+  wifiMulti.addAP(WIFI_SSID_1, WIFI_PASS_1);
+  wifiMulti.addAP(WIFI_SSID_2, WIFI_PASS_2);
 
   while (wifiMulti.run() != WL_CONNECTED) {
     vTaskDelay(pdMS_TO_TICKS(500));
